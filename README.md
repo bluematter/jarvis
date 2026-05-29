@@ -42,11 +42,28 @@ STT and TTS both run **on your machine as ONNX in Node — no Python, no cloud, 
 
 Models download once on first run (~150 MB total) to the HF cache, then run locally. Configure model/voice/quality in `.env`. **Barge-in** is on — clap or hold Space while Jarvis is talking and he stops to listen.
 
+## Business data (RevenueCat · GSC · PostHog)
+
+Jarvis pulls revenue and search data through MCP servers and **caches summaries to `hub/metrics/`** so it answers instantly. The servers are registered in your user scope (so every project can use them too); the bridge picks them up automatically.
+
+```bash
+pnpm metrics    # pulls all sources -> hub/metrics/*.md  (run nightly via /schedule)
+```
+
+To finish connecting (one-time):
+
+- **RevenueCat** — set `REVENUECAT_V2_API_KEY` in `.env` (a v2 *secret* key from RevenueCat → Project settings → API keys).
+- **Google Search Console** — drop an OAuth client-secrets JSON (Desktop app, from Google Cloud Console) at `~/.config/jarvis/gsc_client_secret.json`; first `pnpm metrics` opens a browser to authorize.
+- **PostHog** — already connected.
+
+Re-register or inspect anytime with `claude mcp list`. `hub/metrics/` is gitignored — business data never leaves your machine.
+
 ## Roadmap
 
 - [x] Local Whisper STT + Kokoro TTS (offline)
 - [x] Barge-in (interrupt while speaking)
-- [ ] `fleet.md` nightly auto-refresh (`/schedule`)
-- [ ] Metrics panels on the HUD (RevenueCat / GSC / PostHog cards)
+- [x] RevenueCat + GSC + PostHog via MCP, cached to `hub/metrics/`
+- [ ] Metrics panels on the HUD (revenue / search / product cards)
+- [ ] `fleet.md` + metrics nightly auto-refresh (`/schedule`)
 - [ ] Per-project deep-context files in `hub/projects/`
 - [ ] AudioWorklet capture (replace deprecated ScriptProcessor)

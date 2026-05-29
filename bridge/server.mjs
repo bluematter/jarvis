@@ -5,25 +5,14 @@
 
 import { createServer } from "node:http";
 import { readFileSync, existsSync } from "node:fs";
-import { join, dirname, extname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, extname } from "node:path";
 import { WebSocketServer } from "ws";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { ROOT } from "./env.mjs"; // loads .env into process.env (must be first)
 import { warmVoice, transcribe, speak } from "./voice.mjs";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(__dirname, "..");
 const HUD_DIR = join(ROOT, "hud");
-
-// --- env (tiny .env loader, no dep) ---
-const env = { ...process.env };
-const envPath = join(ROOT, ".env");
-if (existsSync(envPath)) {
-  for (const line of readFileSync(envPath, "utf8").split("\n")) {
-    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-    if (m) env[m[1]] = m[2].replace(/^["']|["']$/g, "");
-  }
-}
+const env = process.env;
 
 const PORT = Number(env.PORT || 4317);
 const HUB = join(ROOT, env.JARVIS_HUB?.replace(/^\.\//, "") || "hub");

@@ -6,6 +6,7 @@
   "description": "An Iron Man style HUD that talks to your local Claude Code across all your projects.",
   "scripts": {
     "scan": "node scripts/scan-fleet.mjs",
+    "metrics": "node scripts/pull-metrics.mjs",
     "jarvis": "node bridge/server.mjs",
     "dev": "node scripts/scan-fleet.mjs && node bridge/server.mjs"
   },
