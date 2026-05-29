@@ -18,7 +18,11 @@
     min-height: 2.4em; text-shadow: 0 0 24px rgba(56,225,255,.25); }
   .state { letter-spacing: .35em; text-transform: uppercase; font-size: .72rem; color: var(--c);
     opacity: .8; }
-  .hint { position: absolute; bottom: 26px; font-size: .8rem; color: #4a6675; }
+  .hint { position: absolute; bottom: 30px; font-size: .8rem; color: #4a6675; }
+  .meter { position: absolute; bottom: 18px; width: 160px; height: 3px; background: #0e2330;
+    border-radius: 2px; overflow: hidden; opacity: 0; transition: opacity .3s; }
+  .meter.on { opacity: 1; }
+  .meter i { display: block; height: 100%; width: 0; background: var(--c); transition: width .05s linear; }
   kbd { background: #11202c; border: 1px solid #1d3340; border-radius: 5px; padding: 1px 7px; color: var(--c); }
   /* side rails */
   .rail { background: linear-gradient(180deg,#04101a,#03080e); border-left: 1px solid #0d2330;
@@ -76,7 +80,8 @@
     <div class="state" id="state">connecting</div>
     <div class="caption" id="caption">Initializing systems.</div>
     <button class="btn" id="talk" title="Hold to talk (or press Space)">🎙</button>
-    <div class="hint">Hold <kbd>Space</kbd> or the mic to talk · <b>double-clap</b> to wake · local Whisper + Kokoro</div>
+    <div class="hint" id="hint"><b>Click anywhere once</b> to enable the mic, then hold <kbd>Space</kbd> or the mic to talk</div>
+    <div class="meter" id="meter"><i id="mlevel"></i></div>
   </div>
   <div class="rail">
     <h2><span class="dot" id="conn"></span>Activity</h2>
@@ -86,6 +91,7 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const caption = $("caption"), stateEl = $("state"), feed = $("feed"), talk = $("talk"), conn = $("conn");
+const hint = $("hint"), meter = $("meter"), mlevel = $("mlevel");
 
 // ---------- websocket to the bridge ----------
 let ws, wsReady = false;
@@ -147,8 +153,13 @@ async function initAudio() {
     src.connect(proc);
     const mute = actx.createGain(); mute.gain.value = 0; proc.connect(mute); mute.connect(actx.destination);
     clapLoop();
-  } catch { /* no mic — buttons stay up, just won't capture */ }
+    hint.innerHTML = '🎙 mic armed · hold <kbd>Space</kbd> or the mic button to talk';
+    meter.classList.add("on");
+  } catch { hint.textContent = "Mic blocked — allow microphone access in the browser, then reload."; }
 }
+// keep audio alive when you refocus the window (browsers suspend it in the background)
+addEventListener("visibilitychange", () => { if (!document.hidden && actx) actx.resume(); });
+addEventListener("focus", () => { if (actx) actx.resume(); });
 
 function startListen() {
   if (!actx || listening || mode === "thinking") return;
@@ -194,15 +205,17 @@ function playNext() {
 function stopPlayback() { aqueue = []; speakEnded = false; if (curSrc) { try { curSrc.onended = null; curSrc.stop(); } catch {} curSrc = null; } aplaying = false; }
 function finishSpeaking() { speakEnded = false; if (mode === "speaking") { mode = "idle"; setState("idle", caption.textContent); } }
 
-// ---------- double-clap wake ----------
+// ---------- mic level + (optional) double-clap wake ----------
+const CLAP_WAKE = false; // off by default — push-to-talk (Space/mic) is primary. Flip to true to re-enable.
 function clapLoop() {
   let lastClap = 0, claps = 0, prev = 0;
   setInterval(() => {
     if (!micAnalyser) return;
     micAnalyser.getByteTimeDomainData(tmp);
     let peak = 0; for (const v of tmp) peak = Math.max(peak, Math.abs(v - 128));
+    mlevel.style.width = Math.min(100, (peak / 128) * 200) + "%"; // live mic level
     const now = performance.now();
-    if (peak > 95 && prev < 45 && now - lastClap > 180 && !listening && mode !== "thinking") {
+    if (CLAP_WAKE && peak > 95 && prev < 45 && now - lastClap > 180 && !listening && mode !== "thinking") {
       claps = now - lastClap < 800 ? claps + 1 : 1; lastClap = now;
       if (claps >= 2) { claps = 0; startListen(); }
     }

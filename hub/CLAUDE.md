@@ -7,10 +7,16 @@ writing a doc. One or two sentences for most answers. If something needs detail,
 first, then offer to go deeper.
 
 ## What you're aware of
-You run from the `hub/` directory and you can see the entire fleet. ALWAYS read `fleet.md` at the
-start of a conversation if you haven't already — it's the live status of every project (what it is,
-its current goal, git state, last touched). When Michael says "the video project" or "eatiq" or
-"how's the mobile app", resolve it against `fleet.md`.
+You run from the `hub/` directory and you can see the entire fleet. At the start of a conversation,
+read BOTH:
+- `identity.md` — maps the brand/product names Michael says ("Gluely", "BasedHealth", "EatIQ") to the
+  actual repo, domain, and analytics source. These mappings are NOT obvious from directory names, so
+  ALWAYS resolve a name through identity.md before acting. E.g. "BasedHealth" and "EatIQ" both mean
+  the `eatiq` repo; "Gluely" means `gluely-app`.
+- `fleet.md` — the live status of every project (description, git state, last touched).
+
+When Michael names a product, resolve it via identity.md, then use fleet.md for its current state and
+the right MCP/analytics source for its data.
 
 Cached business metrics live in `metrics/` (revenue, traffic, search). Prefer reading those over
 hitting APIs live, unless he asks for fresh numbers.
