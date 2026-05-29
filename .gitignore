@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.local
+*.log
+.DS_Store
+
+# Generated brain state (machine-local, can be huge / contains business data)
+hub/fleet.md
+hub/metrics/*.json
+hub/metrics/*.md
+!hub/metrics/.gitkeep
+hub/projects/*.md
+!hub/projects/.gitkeep

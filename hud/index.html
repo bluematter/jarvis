@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>JARVIS</title>
+<style>
+  :root { --c: #38e1ff; --dim: #0a1822; --bg: #03070d; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: var(--bg); color: #cfeefb; overflow: hidden;
+    font-family: -apple-system, "SF Pro Display", system-ui, sans-serif; }
+  #app { height: 100%; display: grid; grid-template-columns: 1fr 380px; }
+  .stage { position: relative; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 32px; }
+  canvas#orb { width: min(46vh, 520px); height: min(46vh, 520px); }
+  .caption { max-width: 70%; text-align: center; font-size: 1.7rem; line-height: 1.45;
+    min-height: 2.4em; text-shadow: 0 0 24px rgba(56,225,255,.25); }
+  .state { letter-spacing: .35em; text-transform: uppercase; font-size: .72rem; color: var(--c);
+    opacity: .8; }
+  .hint { position: absolute; bottom: 26px; font-size: .8rem; color: #4a6675; }
+  kbd { background: #11202c; border: 1px solid #1d3340; border-radius: 5px; padding: 1px 7px; color: var(--c); }
+  /* side rail */
+  .rail { background: linear-gradient(180deg,#04101a,#03080e); border-left: 1px solid #0d2330;
+    display: flex; flex-direction: column; }
+  .rail h2 { font-size: .7rem; letter-spacing: .3em; color: #3f6a7d; text-transform: uppercase;
+    padding: 18px 20px 10px; }
+  .feed { flex: 1; overflow-y: auto; padding: 0 20px 20px; display: flex; flex-direction: column; gap: 8px; }
+  .feed::-webkit-scrollbar { width: 0; }
+  .tool { font-size: .82rem; color: #7fd6f0; background: #07151f; border: 1px solid #0e2a39;
+    border-radius: 8px; padding: 8px 11px; animation: pop .25s ease; }
+  .tool b { color: var(--c); }
+  .tool small { color: #4a6675; display: block; margin-top: 2px; word-break: break-all; }
+  .me { font-size: .82rem; color: #9fb4c0; border-left: 2px solid #1d3340; padding: 4px 0 4px 11px; }
+  @keyframes pop { from { opacity: 0; transform: translateY(6px); } }
+  .btn { position: absolute; bottom: 70px; width: 78px; height: 78px; border-radius: 50%;
+    border: 1px solid #1d3340; background: #07151f; color: var(--c); font-size: 1.6rem; cursor: pointer;
+    transition: .15s; }
+  .btn:hover { background: #0c2230; }
+  .btn.live { background: var(--c); color: #02121a; box-shadow: 0 0 40px var(--c); }
+  .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:#2a4350; margin-right:6px; }
+  .dot.on { background: #2ecc71; box-shadow: 0 0 8px #2ecc71; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="stage">
+    <canvas id="orb"></canvas>
+    <div class="state" id="state">connecting</div>
+    <div class="caption" id="caption">Initializing systems.</div>
+    <button class="btn" id="talk" title="Hold to talk (or press Space)">🎙</button>
+    <div class="hint">Hold <kbd>Space</kbd> or the mic to talk · <b>double-clap</b> to wake · Jarvis speaks replies</div>
+  </div>
+  <div class="rail">
+    <h2><span class="dot" id="conn"></span>Activity</h2>
+    <div class="feed" id="feed"></div>
+  </div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const caption = $("caption"), stateEl = $("state"), feed = $("feed"), talk = $("talk"), conn = $("conn");
+
+// ---------- websocket to the bridge ----------
+let ws, wsReady = false;
+function connect() {
+  ws = new WebSocket(`ws://${location.host}`);
+  ws.onopen = () => { wsReady = true; conn.classList.add("on"); setState("idle", "Online. Say the word."); };
+  ws.onclose = () => { wsReady = false; conn.classList.remove("on"); setState("offline", "Bridge lost. Reconnecting…"); setTimeout(connect, 1500); };
+  ws.onmessage = (e) => handle(JSON.parse(e.data));
+}
+let streamed = "";
+function handle(m) {
+  if (m.type === "thinking") { streamed = ""; setState("thinking", "…"); mode = "thinking"; }
+  else if (m.type === "delta") { streamed += m.text; caption.textContent = streamed; }
+  else if (m.type === "tool") addTool(m.name, m.input);
+  else if (m.type === "result") { const t = m.text || streamed; caption.textContent = t; speak(t); setState("idle", t || "Done."); mode = "speaking"; }
+  else if (m.type === "busy") setState("thinking", "One thing at a time…");
+  else if (m.type === "error") { setState("idle", "Error: " + m.text); mode = "idle"; }
+}
+function addTool(name, input) {
+  const d = document.createElement("div");
+  d.className = "tool";
+  d.innerHTML = `<b>${name}</b>${input ? `<small>${escape(input)}</small>` : ""}`;
+  feed.appendChild(d); feed.scrollTop = feed.scrollHeight;
+}
+function addMe(text) {
+  const d = document.createElement("div"); d.className = "me"; d.textContent = "“" + text + "”";
+  feed.appendChild(d); feed.scrollTop = feed.scrollHeight;
+}
+const escape = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+function setState(s, cap) { stateEl.textContent = s; if (cap != null) caption.textContent = cap; }
+function sendPrompt(text) { if (!wsReady || !text.trim()) return; addMe(text); ws.send(JSON.stringify({ type: "prompt", text })); }
+
+// ---------- speech in (browser STT — swap for local Whisper later) ----------
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, listening = false;
+if (SR) {
+  rec = new SR(); rec.lang = "en-US"; rec.interimResults = true; rec.continuous = false;
+  rec.onresult = (e) => {
+    let txt = ""; for (const r of e.results) txt += r[0].transcript;
+    caption.textContent = txt;
+    if (e.results[e.results.length - 1].isFinal) { stopListen(); sendPrompt(txt); }
+  };
+  rec.onerror = () => stopListen();
+  rec.onend = () => { if (listening) stopListen(); };
+}
+function startListen() {
+  if (!rec || listening || mode === "thinking") return;
+  speechSynthesis.cancel();
+  listening = true; mode = "listening"; talk.classList.add("live"); setState("listening", "Listening…");
+  try { rec.start(); } catch {}
+}
+function stopListen() { listening = false; talk.classList.remove("live"); if (mode === "listening") mode = "idle"; try { rec.stop(); } catch {} }
+
+// ---------- speech out (browser TTS — swap for Kokoro later) ----------
+let voice = null;
+function pickVoice() {
+  const vs = speechSynthesis.getVoices();
+  voice = vs.find(v => /daniel|arthur|oliver|rishi|guy|google uk english male/i.test(v.name))
+       || vs.find(v => v.lang.startsWith("en")) || vs[0];
+}
+speechSynthesis.onvoiceschanged = pickVoice; pickVoice();
+function speak(text) {
+  if (!text) return; speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.voice = voice; u.rate = 1.05; u.pitch = 0.9;
+  u.onend = () => { if (mode === "speaking") mode = "idle"; };
+  speechSynthesis.speak(u);
+}
+
+// ---------- push to talk ----------
+talk.onmousedown = startListen; talk.onmouseup = stopListen; talk.onmouseleave = () => listening && stopListen();
+talk.ontouchstart = (e) => { e.preventDefault(); startListen(); };
+talk.ontouchend = (e) => { e.preventDefault(); stopListen(); };
+addEventListener("keydown", (e) => { if (e.code === "Space" && !e.repeat) { e.preventDefault(); startListen(); } });
+addEventListener("keyup", (e) => { if (e.code === "Space") { e.preventDefault(); stopListen(); } });
+
+// ---------- mic level + double-clap wake (Web Audio) ----------
+let mode = "idle", level = 0;
+async function initAudio() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const ctx = new AudioContext();
+    const src = ctx.createMediaStreamSource(stream);
+    const an = ctx.createAnalyser(); an.fftSize = 512; src.connect(an);
+    const buf = new Uint8Array(an.frequencyBinCount);
+    let lastClap = 0, claps = 0, prevPeak = 0;
+    setInterval(() => {
+      an.getByteTimeDomainData(buf);
+      let peak = 0; for (const v of buf) peak = Math.max(peak, Math.abs(v - 128));
+      level = level * 0.8 + (peak / 128) * 0.2;
+      // clap = sudden sharp transient (quiet -> loud spike)
+      const now = performance.now();
+      if (peak > 95 && prevPeak < 45 && now - lastClap > 180 && !listening && mode !== "thinking") {
+        if (now - lastClap < 800) { claps++; } else { claps = 1; }
+        lastClap = now;
+        if (claps >= 2) { claps = 0; startListen(); }
+      }
+      prevPeak = peak;
+    }, 40);
+  } catch { /* no mic permission — buttons still work */ }
+}
+
+// ---------- the orb ----------
+const cv = $("orb"), g = cv.getContext("2d");
+function size() { const d = devicePixelRatio || 1; cv.width = cv.clientWidth * d; cv.height = cv.clientHeight * d; }
+addEventListener("resize", size); size();
+let t = 0;
+(function draw() {
+  t += 0.016; const w = cv.width, h = cv.height, cx = w / 2, cy = h / 2;
+  g.clearRect(0, 0, w, h);
+  const base = Math.min(w, h) * 0.28;
+  const react = mode === "listening" ? level * base * 1.4
+              : mode === "thinking" ? (Math.sin(t * 6) * 0.5 + 0.5) * base * 0.35
+              : mode === "speaking" ? (Math.sin(t * 9) * 0.5 + 0.5) * base * 0.3
+              : Math.sin(t * 1.5) * base * 0.05;
+  const col = mode === "thinking" ? "180,120,255" : mode === "listening" ? "56,225,255" : mode === "speaking" ? "120,255,200" : "40,120,160";
+  for (let i = 3; i >= 0; i--) {
+    const r = base + react + i * (base * 0.16);
+    g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2);
+    g.fillStyle = `rgba(${col}, ${0.06 + (3 - i) * 0.02})`; g.fill();
+  }
+  // rotating ring
+  g.save(); g.translate(cx, cy); g.rotate(t * 0.4);
+  g.beginPath(); g.arc(0, 0, base + react, -0.6, 2.0); g.strokeStyle = `rgba(${col},0.9)`;
+  g.lineWidth = Math.max(2, w * 0.004); g.stroke(); g.restore();
+  g.beginPath(); g.arc(cx, cy, base + react, 0, Math.PI * 2);
+  g.fillStyle = `rgba(${col},0.10)`; g.fill();
+  requestAnimationFrame(draw);
+})();
+
+// boot (audio needs a user gesture on some browsers — first click/space also kicks it)
+connect();
+addEventListener("pointerdown", () => { initAudio(); }, { once: true });
+addEventListener("keydown", () => { initAudio(); }, { once: true });
+</script>
+</body>
+</html>
