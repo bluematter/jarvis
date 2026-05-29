@@ -4,7 +4,7 @@
 // The browser is pure I/O. All the brains live here + in Claude Code.
 
 import { createServer } from "node:http";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join, extname } from "node:path";
 import { WebSocketServer } from "ws";
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -25,7 +25,13 @@ const readJSON = (p, fb) => { try { return JSON.parse(readFileSync(p, "utf8")); 
 const readState = () => {
   const fleet = readJSON(join(HUB, "fleet.json"), null);
   const metrics = readJSON(join(HUB, "metrics", "cards.json"), null);
-  return { fleet, cards: metrics?.cards || [], metricsUpdatedAt: metrics?.updatedAt || null };
+  const cards = [...(metrics?.cards || [])];
+  try { // merge direct-API connector cards (Whop, Telegram, …)
+    for (const f of readdirSync(join(HUB, "metrics"))) {
+      if (f.endsWith(".card.json")) { const c = readJSON(join(HUB, "metrics", f), null); if (c) cards.push(c); }
+    }
+  } catch {}
+  return { fleet, cards, metricsUpdatedAt: metrics?.updatedAt || null };
 };
 
 const httpServer = createServer((req, res) => {
