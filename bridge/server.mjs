@@ -4,6 +4,7 @@
 // The browser is pure I/O. All the brains live here + in Claude Code.
 
 import { createServer } from "node:http";
+import { spawn } from "node:child_process";
 import { readFileSync, existsSync, readdirSync, appendFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, extname } from "node:path";
 import { WebSocketServer } from "ws";
@@ -68,6 +69,21 @@ const recentTurns = (n = 30) => {
   } catch { return []; }
 };
 
+// morning briefing — auto-runs once per day on first interaction
+const todayStr = () => new Date().toISOString().slice(0, 10);
+const BRIEF_FILE = join(STATE, "brief.json");
+const briefDate = () => readJSON(BRIEF_FILE, {})?.date || "";
+const markBriefed = () => { try { writeFileSync(BRIEF_FILE, JSON.stringify({ date: todayStr() })); } catch {} };
+const BRIEF_PROMPT = `Give me a short SPOKEN morning briefing. Read metrics/*.card.json for current revenue (Gluely, BasedHealth, Wireflow) and fleet.md's "Active focus" for what changed across projects. In 3-4 natural sentences: lead with the revenue headline and any notable move, then what's actively being worked on, then 1-2 things that need my attention (uncommitted work sitting for days, anything dropping). Conversational, no lists, no markdown — you're speaking to me.`;
+
+// keep the dashboard fresh while the bridge is up: re-scan fleet + re-pull connectors
+const REFRESH_MS = Number(process.env.JARVIS_REFRESH_MS || 15 * 60 * 1000);
+function refreshData() {
+  for (const script of ["scripts/scan-fleet.mjs", "scripts/run-connectors.mjs"]) {
+    try { spawn(process.execPath, [join(ROOT, script)], { cwd: ROOT, stdio: "ignore" }).on("error", () => {}); } catch {}
+  }
+}
+
 // --- websocket bridge ---
 const wss = new WebSocketServer({ server: httpServer });
 
@@ -79,6 +95,7 @@ wss.on("connection", (ws) => {
 
   send({ type: "ready", hub: HUB });
   send({ type: "history", items: recentTurns(30) }); // replay so the feed isn't blank on reload
+  send({ type: "brief-due", due: briefDate() !== todayStr() }); // first open of the day → auto-briefing
   warmVoice().then(() => send({ type: "voice-ready" })).catch(() => {});
 
   ws.on("message", async (data, isBinary) => {
@@ -101,6 +118,7 @@ wss.on("connection", (ws) => {
     try { msg = JSON.parse(data.toString()); } catch { return; }
     if (msg.type === "prompt" && msg.text?.trim()) return runTurn(msg.text);
     if (msg.type === "search" && msg.text?.trim()) return runSearch(msg.text);
+    if (msg.type === "brief") return runBrief();
   });
 
   // read-only history search over claude-mem (separate from the conversation; no TTS, no writes)
@@ -136,59 +154,61 @@ wss.on("connection", (ws) => {
     }
   }
 
-  async function runTurn(prompt) {
+  // shared: run the conversational agent, streaming deltas + tool calls; returns final text
+  async function runAgent(prompt) {
+    let finalText = "";
+    const stream = query({
+      prompt,
+      options: {
+        cwd: HUB,
+        model: MODEL,
+        permissionMode: PERMISSION_MODE,
+        settingSources: ["user", "project"], // loads hub CLAUDE.md + your MCP servers
+        includePartialMessages: true,
+        ...(sessionId ? { resume: sessionId } : {}),
+      },
+    });
+    for await (const ev of stream) {
+      if (ev.session_id) sessionId = ev.session_id;
+      if (ev.type === "stream_event") {
+        const d = ev.event?.delta;
+        if (d?.type === "text_delta" && d.text) send({ type: "delta", text: d.text });
+      } else if (ev.type === "assistant") {
+        for (const block of ev.message?.content || []) {
+          if (block.type === "tool_use") send({ type: "tool", name: block.name, input: summarizeInput(block.input) });
+        }
+      } else if (ev.type === "result") finalText = ev.result || finalText;
+    }
+    return finalText.trim();
+  }
+
+  // a spoken turn: youLabel is what shows in history, prompt is what the agent runs
+  async function speakTurn(youLabel, prompt) {
     if (busy) return send({ type: "busy" });
     busy = true;
-    appendTurn("you", prompt);
+    appendTurn("you", youLabel);
     send({ type: "thinking" });
-    let finalText = "";
-
     try {
-      const stream = query({
-        prompt,
-        options: {
-          cwd: HUB,
-          model: MODEL,
-          permissionMode: PERMISSION_MODE,
-          settingSources: ["user", "project"], // loads hub CLAUDE.md + your MCP servers
-          includePartialMessages: true,
-          ...(sessionId ? { resume: sessionId } : {}),
-        },
-      });
-
-      for await (const ev of stream) {
-        if (ev.session_id) sessionId = ev.session_id;
-        if (ev.type === "stream_event") {
-          const d = ev.event?.delta;
-          if (d?.type === "text_delta" && d.text) send({ type: "delta", text: d.text });
-        } else if (ev.type === "assistant") {
-          for (const block of ev.message?.content || []) {
-            if (block.type === "tool_use") send({ type: "tool", name: block.name, input: summarizeInput(block.input) });
-          }
-        } else if (ev.type === "result") {
-          finalText = ev.result || finalText;
-        }
-      }
-      finalText = finalText.trim();
+      const finalText = await runAgent(prompt);
       appendTurn("jarvis", finalText);
       saveSession(sessionId);
       send({ type: "result", text: finalText });
-
-      // speak it — local Kokoro, streamed per sentence
-      if (finalText) {
+      if (finalText) { // speak it — local Kokoro, streamed per sentence
         send({ type: "speak-start" });
         try { await speak(finalText, sendAudio); } catch (err) { send({ type: "error", text: "TTS: " + (err?.message || err) }); }
         send({ type: "speak-end" });
       }
     } catch (err) {
       const m = String(err?.message || err);
-      // a stale/invalid resumed session: drop it so the next turn starts clean
-      if (sessionId && /session|resume|not\s*found|no such/i.test(m)) { clearSession(); sessionId = null; }
+      if (sessionId && /session|resume|not\s*found|no such/i.test(m)) { clearSession(); sessionId = null; } // stale resume
       send({ type: "error", text: m });
     } finally {
       busy = false;
     }
   }
+
+  const runTurn = (prompt) => speakTurn(prompt, prompt);
+  const runBrief = () => { markBriefed(); return speakTurn("☼ Morning briefing", BRIEF_PROMPT); };
 });
 
 function bufToFloat32(buf) {
@@ -215,7 +235,10 @@ httpServer.listen(PORT, () => {
   console.log(`\n  JARVIS online`);
   console.log(`  HUD:  http://localhost:${PORT}`);
   console.log(`  hub:  ${HUB}`);
-  console.log(`  mode: ${PERMISSION_MODE}`);
+  console.log(`  mode: ${PERMISSION_MODE} · model: ${MODEL || "(default)"}`);
+  refreshData(); // freshen fleet + connectors now…
+  setInterval(refreshData, REFRESH_MS); // …and every ~15 min so the TV never goes stale
+  console.log(`  auto-refresh: every ${Math.round(REFRESH_MS / 60000)} min`);
   warmVoice({
     sttModel: env.JARVIS_STT_MODEL,
     ttsModel: env.JARVIS_TTS_MODEL,

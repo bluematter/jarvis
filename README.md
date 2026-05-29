@@ -26,6 +26,16 @@ Open **http://localhost:4317** (Chrome recommended for voice). Hold **Space** or
 
 `pnpm dev` does scan + start in one go.
 
+### Always-on (TV mode)
+```bash
+bash scripts/install-service.sh     # run as a launchd service: starts on login, self-restarts
+# uninstall:  bash scripts/install-service.sh uninstall
+# restart after code changes:  launchctl kickstart -k gui/$(id -u)/com.jarvis.bridge
+```
+While running, the bridge auto-refreshes fleet + connectors every ~15 min (`JARVIS_REFRESH_MS`), and
+gives a spoken **morning briefing** the first time you interact each day (or press `B`). Set the voice
+model with `JARVIS_MODEL` (default left blank = your Claude Code default; Sonnet recommended for voice).
+
 ## How it works
 
 - **`hub/`** is the brain. `hub/CLAUDE.md` is the Jarvis persona; `hub/fleet.md` (generated) is the live status of every project; `hub/metrics/` caches business data. Claude Code runs *from this directory*, so it sees all of it.
@@ -65,7 +75,9 @@ Re-register or inspect anytime with `claude mcp list`. `hub/metrics/` is gitigno
 - [x] Fleet awareness + identity layer (brand → repo → analytics)
 - [x] HUD dashboard cards (Fleet + Revenue + Search + Product), polled live
 - [x] Revenue connectors: RevenueCat (Gluely, BasedHealth), Whop (Wireflow); PostHog connected
-- [ ] `fleet.md` + connectors/metrics nightly auto-refresh (`/schedule`)
+- [x] Conversation persistence + history replay across reload; "search my history" (claude-mem)
+- [x] Always-on launchd service + auto-refresh every 15 min (`scripts/install-service.sh`)
+- [x] Morning briefing — spoken, auto once/day on first interaction (or `B` / the topbar chip)
 - [ ] Per-project deep-context files in `hub/projects/`
 - [ ] AudioWorklet capture (replace deprecated ScriptProcessor)
 

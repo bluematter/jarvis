@@ -90,6 +90,8 @@
     background: var(--grad); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 0 18px rgba(56,225,255,.3)); }
   .topbar .sys { display: flex; align-items: center; gap: 18px; font-family: var(--mono); font-size: .64rem; color: #5d8294; text-transform: uppercase; letter-spacing: .04em; }
   .topbar .sys .chip { display: inline-flex; align-items: center; gap: 7px; }
+  .topbar .sys .chip.brief { cursor: pointer; color: var(--c); border: 1px solid #123247; padding: 4px 11px; border-radius: 999px; transition: .15s; }
+  .topbar .sys .chip.brief:hover { background: rgba(56,225,255,.1); border-color: var(--c); box-shadow: 0 0 16px rgba(56,225,255,.15); }
   .topbar .clk { text-align: right; }
   .topbar .clk .time { font-family: var(--mono); font-size: 1.25rem; color: #e8f8ff; letter-spacing: .02em; line-height: 1; }
   .topbar .clk .date { font-family: var(--mono); font-size: .58rem; color: #4d6f7e; margin-top: 5px; letter-spacing: .14em; }
@@ -158,6 +160,7 @@
         <span class="chip"><span class="dot" id="tbBridge"></span>Bridge</span>
         <span class="chip"><span class="dot" id="tbVoice"></span>Voice</span>
         <span class="chip" id="tbFleet"></span>
+        <span class="chip brief" id="brief" title="Morning briefing (press B)">◐ Brief</span>
       </div>
       <div class="clk"><div class="time" id="clkTime">--:--</div><div class="date" id="clkDate"></div></div>
     </div>
@@ -179,8 +182,8 @@
 const $ = (id) => document.getElementById(id);
 const caption = $("caption"), stateEl = $("state"), feed = $("feed"), talk = $("talk"), conn = $("conn");
 const hint = $("hint"), meter = $("meter"), mlevel = $("mlevel"), q = $("q"), results = $("results");
-const tbBridge = $("tbBridge"), tbVoice = $("tbVoice"), tbFleet = $("tbFleet");
-let searchAcc = "", rbodyEl = null;
+const tbBridge = $("tbBridge"), tbVoice = $("tbVoice"), tbFleet = $("tbFleet"), briefBtn = $("brief");
+let searchAcc = "", rbodyEl = null, briefDue = false;
 
 // state -> pill color (matches the orb palette)
 const STATE_COLOR = { idle:"#2878a0", connecting:"#2878a0", offline:"#ff5a5a", listening:"#38e1ff", transcribing:"#38e1ff", thinking:"#b478ff", speaking:"#78ffc8" };
@@ -208,6 +211,7 @@ let streamed = "";
 function handle(m) {
   if (m.type === "voice-ready") { tbVoice.classList.add("on"); setState("idle", "Online. Say the word."); }
   else if (m.type === "history") renderHistory(m.items);
+  else if (m.type === "brief-due") briefDue = m.due;
   else if (m.type === "transcribing") { setState("transcribing", "…"); mode = "thinking"; }
   else if (m.type === "transcript") { if (m.text) addMe(m.text); }
   else if (m.type === "thinking") { streamed = ""; setState("thinking", "…"); mode = "thinking"; }
@@ -283,6 +287,7 @@ async function initAudio() {
     clapLoop();
     hint.innerHTML = 'mic armed · hold <kbd>Space</kbd> or the mic button to talk';
     meter.classList.add("on");
+    if (briefDue) { briefDue = false; setTimeout(sendBrief, 700); } // first interaction of the day → auto-briefing
   } catch { hint.textContent = "Mic blocked — allow microphone access in the browser, then reload."; }
 }
 addEventListener("visibilitychange", () => { if (!document.hidden && actx) actx.resume(); });
@@ -362,6 +367,11 @@ talk.ontouchend = (e) => { e.preventDefault(); stopListen(); };
 const typing = (e) => e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA";
 addEventListener("keydown", (e) => { if (e.code === "Space" && !e.repeat && !typing(e)) { e.preventDefault(); startListen(); } });
 addEventListener("keyup", (e) => { if (e.code === "Space" && !typing(e)) { e.preventDefault(); stopListen(); } });
+
+// ---------- morning briefing ----------
+function sendBrief() { if (!wsReady || mode === "thinking") return; ws.send(JSON.stringify({ type: "brief" })); }
+briefBtn.onclick = sendBrief;
+addEventListener("keydown", (e) => { if ((e.key === "b" || e.key === "B") && !typing(e)) { e.preventDefault(); sendBrief(); } });
 
 // ---------- the ORB (reticle) ----------
 const cv = $("orb"), g = cv.getContext("2d");
