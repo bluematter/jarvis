@@ -62,8 +62,23 @@ Re-register or inspect anytime with `claude mcp list`. `hub/metrics/` is gitigno
 
 - [x] Local Whisper STT + Kokoro TTS (offline)
 - [x] Barge-in (interrupt while speaking)
-- [x] RevenueCat + GSC + PostHog via MCP, cached to `hub/metrics/`
+- [x] Fleet awareness + identity layer (brand → repo → analytics)
 - [x] HUD dashboard cards (Fleet + Revenue + Search + Product), polled live
-- [ ] `fleet.md` + metrics nightly auto-refresh (`/schedule`)
+- [x] Revenue connectors: RevenueCat (Gluely, BasedHealth), Whop (Wireflow); PostHog connected
+- [ ] `fleet.md` + connectors/metrics nightly auto-refresh (`/schedule`)
 - [ ] Per-project deep-context files in `hub/projects/`
 - [ ] AudioWorklet capture (replace deprecated ScriptProcessor)
+
+### Planned data connectors (backlog — deferred)
+Each follows the `scripts/connectors/*.mjs` → `hub/metrics/*.card.json` pattern; the credential
+goes in gitignored `jarvis/.env` (or `~/.config/jarvis/`). None live in the app repos — all are
+dashboard-minted.
+
+- [ ] **GSC** (all SEO: gluely.ai, basedhealth.ai, rizz, wireflow) — OAuth JSON → `~/.config/jarvis/gsc_client_secret.json`
+- [ ] **Telegram Stars** (basedlabs revenue) — `TELEGRAM_BOT_TOKEN`, Bot API `getStarTransactions`
+- [ ] **Vercel** (deploy status + bandwidth/cost across the Next apps) — `VERCEL_TOKEN`
+- [ ] **AI / inference spend → margin** (Anthropic + OpenAI **admin** keys) — `ANTHROPIC_ADMIN_KEY`, `OPENAI_ADMIN_KEY`
+- [ ] **Cloudflare** (traffic + spend) — API token; GraphQL analytics + billing
+- [ ] **AWS spend** (Cost Explorer `ce:GetCostAndUsage`) — scoped IAM key
+- [ ] **App Store Connect + Google Play** (installs, ratings, reviews) — ASC `.p8` + Play service-account JSON
+- [ ] **Social TikTok/IG** (`@based.healthai` growth) — no API token today; likely reuse the Playwright session
