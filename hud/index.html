@@ -48,7 +48,7 @@
     <div class="state" id="state">connecting</div>
     <div class="caption" id="caption">Initializing systems.</div>
     <button class="btn" id="talk" title="Hold to talk (or press Space)">🎙</button>
-    <div class="hint">Hold <kbd>Space</kbd> or the mic to talk · <b>double-clap</b> to wake · Jarvis speaks replies</div>
+    <div class="hint">Hold <kbd>Space</kbd> or the mic to talk · <b>double-clap</b> to wake · local Whisper + Kokoro</div>
   </div>
   <div class="rail">
     <h2><span class="dot" id="conn"></span>Activity</h2>
@@ -63,16 +63,23 @@ const caption = $("caption"), stateEl = $("state"), feed = $("feed"), talk = $("
 let ws, wsReady = false;
 function connect() {
   ws = new WebSocket(`ws://${location.host}`);
-  ws.onopen = () => { wsReady = true; conn.classList.add("on"); setState("idle", "Online. Say the word."); };
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => { wsReady = true; conn.classList.add("on"); setState("idle", "Online. Warming voice…"); };
   ws.onclose = () => { wsReady = false; conn.classList.remove("on"); setState("offline", "Bridge lost. Reconnecting…"); setTimeout(connect, 1500); };
-  ws.onmessage = (e) => handle(JSON.parse(e.data));
+  ws.onmessage = (e) => { if (typeof e.data === "string") handle(JSON.parse(e.data)); else enqueueAudio(e.data); };
 }
 let streamed = "";
 function handle(m) {
-  if (m.type === "thinking") { streamed = ""; setState("thinking", "…"); mode = "thinking"; }
+  if (m.type === "voice-ready") setState("idle", "Online. Say the word.");
+  else if (m.type === "transcribing") { setState("transcribing", "…"); mode = "thinking"; }
+  else if (m.type === "transcript") { if (m.text) addMe(m.text); }
+  else if (m.type === "thinking") { streamed = ""; setState("thinking", "…"); mode = "thinking"; }
   else if (m.type === "delta") { streamed += m.text; caption.textContent = streamed; }
   else if (m.type === "tool") addTool(m.name, m.input);
-  else if (m.type === "result") { const t = m.text || streamed; caption.textContent = t; speak(t); setState("idle", t || "Done."); mode = "speaking"; }
+  else if (m.type === "result") { const t = m.text || streamed; caption.textContent = t || "Done."; }
+  else if (m.type === "speak-start") { mode = "speaking"; setState("speaking", caption.textContent); }
+  else if (m.type === "speak-end") { speakEnded = true; if (!aplaying) finishSpeaking(); }
+  else if (m.type === "idle") { mode = "idle"; setState("idle", caption.textContent); }
   else if (m.type === "busy") setState("thinking", "One thing at a time…");
   else if (m.type === "error") { setState("idle", "Error: " + m.text); mode = "idle"; }
 }
@@ -90,41 +97,94 @@ const escape = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", "
 function setState(s, cap) { stateEl.textContent = s; if (cap != null) caption.textContent = cap; }
 function sendPrompt(text) { if (!wsReady || !text.trim()) return; addMe(text); ws.send(JSON.stringify({ type: "prompt", text })); }
 
-// ---------- speech in (browser STT — swap for local Whisper later) ----------
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-let rec = null, listening = false;
-if (SR) {
-  rec = new SR(); rec.lang = "en-US"; rec.interimResults = true; rec.continuous = false;
-  rec.onresult = (e) => {
-    let txt = ""; for (const r of e.results) txt += r[0].transcript;
-    caption.textContent = txt;
-    if (e.results[e.results.length - 1].isFinal) { stopListen(); sendPrompt(txt); }
-  };
-  rec.onerror = () => stopListen();
-  rec.onend = () => { if (listening) stopListen(); };
-}
-function startListen() {
-  if (!rec || listening || mode === "thinking") return;
-  speechSynthesis.cancel();
-  listening = true; mode = "listening"; talk.classList.add("live"); setState("listening", "Listening…");
-  try { rec.start(); } catch {}
-}
-function stopListen() { listening = false; talk.classList.remove("live"); if (mode === "listening") mode = "idle"; try { rec.stop(); } catch {} }
+// ---------- audio engine: mic capture (STT in) + playback (TTS out) ----------
+let mode = "idle", level = 0, listening = false;
+let actx = null, micAnalyser = null, playAnalyser = null;
+let capturing = false, capBuf = [];
+const tmp = new Uint8Array(256);
 
-// ---------- speech out (browser TTS — swap for Kokoro later) ----------
-let voice = null;
-function pickVoice() {
-  const vs = speechSynthesis.getVoices();
-  voice = vs.find(v => /daniel|arthur|oliver|rishi|guy|google uk english male/i.test(v.name))
-       || vs.find(v => v.lang.startsWith("en")) || vs[0];
+async function initAudio() {
+  if (actx) { if (actx.state === "suspended") actx.resume(); return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+    actx = new AudioContext();
+    const src = actx.createMediaStreamSource(stream);
+    micAnalyser = actx.createAnalyser(); micAnalyser.fftSize = 512; src.connect(micAnalyser);
+    playAnalyser = actx.createAnalyser(); playAnalyser.fftSize = 512;
+    // raw PCM capture via ScriptProcessor, routed to a muted sink so it runs without echo
+    const proc = actx.createScriptProcessor(4096, 1, 1);
+    proc.onaudioprocess = (e) => { if (capturing) capBuf.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+    src.connect(proc);
+    const mute = actx.createGain(); mute.gain.value = 0; proc.connect(mute); mute.connect(actx.destination);
+    clapLoop();
+  } catch { /* no mic — buttons stay up, just won't capture */ }
 }
-speechSynthesis.onvoiceschanged = pickVoice; pickVoice();
-function speak(text) {
-  if (!text) return; speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  u.voice = voice; u.rate = 1.05; u.pitch = 0.9;
-  u.onend = () => { if (mode === "speaking") mode = "idle"; };
-  speechSynthesis.speak(u);
+
+function startListen() {
+  if (!actx || listening || mode === "thinking") return;
+  stopPlayback(); // barge-in: interrupt Jarvis if he's mid-sentence
+  listening = true; mode = "listening"; capturing = true; capBuf = [];
+  talk.classList.add("live"); setState("listening", "Listening…");
+}
+function stopListen() {
+  if (!listening) return;
+  listening = false; capturing = false; talk.classList.remove("live");
+  const pcm = mergeDownsample(capBuf, actx.sampleRate, 16000); capBuf = [];
+  if (pcm.length < 2400) { mode = "idle"; setState("idle", "…"); return; } // <0.15s = noise
+  mode = "thinking"; setState("transcribing", "…");
+  if (wsReady) ws.send(pcm.buffer);
+}
+function mergeDownsample(chunks, inRate, outRate) {
+  let len = 0; for (const c of chunks) len += c.length;
+  const merged = new Float32Array(len); let o = 0; for (const c of chunks) { merged.set(c, o); o += c.length; }
+  if (inRate === outRate) return merged;
+  const ratio = inRate / outRate, outLen = Math.floor(len / ratio), out = new Float32Array(outLen);
+  for (let i = 0; i < outLen; i++) { // box-filter average = anti-alias, much cleaner STT
+    const a = Math.floor(i * ratio), b = Math.min(len, Math.floor((i + 1) * ratio));
+    let s = 0; for (let j = a; j < b; j++) s += merged[j];
+    out[i] = b > a ? s / (b - a) : 0;
+  }
+  return out;
+}
+
+// ---------- playback queue (TTS audio streamed from the bridge) ----------
+let aqueue = [], aplaying = false, curSrc = null, speakEnded = false;
+async function enqueueAudio(arrayBuffer) {
+  if (!actx) return;
+  try { aqueue.push(await actx.decodeAudioData(arrayBuffer.slice(0))); if (!aplaying) playNext(); } catch {}
+}
+function playNext() {
+  if (!aqueue.length) { aplaying = false; if (speakEnded) finishSpeaking(); return; }
+  aplaying = true; mode = "speaking";
+  curSrc = actx.createBufferSource(); curSrc.buffer = aqueue.shift();
+  curSrc.connect(playAnalyser); playAnalyser.connect(actx.destination);
+  curSrc.onended = () => { curSrc = null; playNext(); };
+  curSrc.start();
+}
+function stopPlayback() { aqueue = []; speakEnded = false; if (curSrc) { try { curSrc.onended = null; curSrc.stop(); } catch {} curSrc = null; } aplaying = false; }
+function finishSpeaking() { speakEnded = false; if (mode === "speaking") { mode = "idle"; setState("idle", caption.textContent); } }
+
+// ---------- double-clap wake ----------
+function clapLoop() {
+  let lastClap = 0, claps = 0, prev = 0;
+  setInterval(() => {
+    if (!micAnalyser) return;
+    micAnalyser.getByteTimeDomainData(tmp);
+    let peak = 0; for (const v of tmp) peak = Math.max(peak, Math.abs(v - 128));
+    const now = performance.now();
+    if (peak > 95 && prev < 45 && now - lastClap > 180 && !listening && mode !== "thinking") {
+      claps = now - lastClap < 800 ? claps + 1 : 1; lastClap = now;
+      if (claps >= 2) { claps = 0; startListen(); }
+    }
+    prev = peak;
+  }, 40);
+}
+function readPeak(an) {
+  an.getByteTimeDomainData(tmp);
+  let p = 0; for (const v of tmp) p = Math.max(p, Math.abs(v - 128));
+  return p / 128;
 }
 
 // ---------- push to talk ----------
@@ -133,32 +193,6 @@ talk.ontouchstart = (e) => { e.preventDefault(); startListen(); };
 talk.ontouchend = (e) => { e.preventDefault(); stopListen(); };
 addEventListener("keydown", (e) => { if (e.code === "Space" && !e.repeat) { e.preventDefault(); startListen(); } });
 addEventListener("keyup", (e) => { if (e.code === "Space") { e.preventDefault(); stopListen(); } });
-
-// ---------- mic level + double-clap wake (Web Audio) ----------
-let mode = "idle", level = 0;
-async function initAudio() {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const ctx = new AudioContext();
-    const src = ctx.createMediaStreamSource(stream);
-    const an = ctx.createAnalyser(); an.fftSize = 512; src.connect(an);
-    const buf = new Uint8Array(an.frequencyBinCount);
-    let lastClap = 0, claps = 0, prevPeak = 0;
-    setInterval(() => {
-      an.getByteTimeDomainData(buf);
-      let peak = 0; for (const v of buf) peak = Math.max(peak, Math.abs(v - 128));
-      level = level * 0.8 + (peak / 128) * 0.2;
-      // clap = sudden sharp transient (quiet -> loud spike)
-      const now = performance.now();
-      if (peak > 95 && prevPeak < 45 && now - lastClap > 180 && !listening && mode !== "thinking") {
-        if (now - lastClap < 800) { claps++; } else { claps = 1; }
-        lastClap = now;
-        if (claps >= 2) { claps = 0; startListen(); }
-      }
-      prevPeak = peak;
-    }, 40);
-  } catch { /* no mic permission — buttons still work */ }
-}
 
 // ---------- the orb ----------
 const cv = $("orb"), g = cv.getContext("2d");
@@ -169,9 +203,13 @@ let t = 0;
   t += 0.016; const w = cv.width, h = cv.height, cx = w / 2, cy = h / 2;
   g.clearRect(0, 0, w, h);
   const base = Math.min(w, h) * 0.28;
-  const react = mode === "listening" ? level * base * 1.4
+  // drive the orb from real audio: mic while listening, Jarvis's voice while speaking
+  let target = mode === "listening" && micAnalyser ? readPeak(micAnalyser)
+             : mode === "speaking" && playAnalyser ? readPeak(playAnalyser) : 0;
+  level = level * 0.75 + target * 0.25;
+  const react = mode === "listening" ? level * base * 1.6
+              : mode === "speaking" ? (0.1 + level * 1.5) * base
               : mode === "thinking" ? (Math.sin(t * 6) * 0.5 + 0.5) * base * 0.35
-              : mode === "speaking" ? (Math.sin(t * 9) * 0.5 + 0.5) * base * 0.3
               : Math.sin(t * 1.5) * base * 0.05;
   const col = mode === "thinking" ? "180,120,255" : mode === "listening" ? "56,225,255" : mode === "speaking" ? "120,255,200" : "40,120,160";
   for (let i = 3; i >= 0; i--) {

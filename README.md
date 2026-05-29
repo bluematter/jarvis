@@ -33,14 +33,20 @@ Open **http://localhost:4317** (Chrome recommended for voice). Hold **Space** or
 - **`bridge/server.mjs`** drives Claude Code via the Agent SDK with `settingSources: ["user","project"]`, so it loads `hub/CLAUDE.md` **and your existing MCP servers** (PostHog, RevenueCat, GSC, Gmail…). Sessions resume across turns, so it's a continuous conversation.
 - **`hud/index.html`** is the interface: reactive orb, double-clap wake, push-to-talk, live tool-activity feed.
 
-## Voice: POC vs. production
+## Voice: fully local & offline
 
-This POC uses the **browser's built-in** SpeechRecognition (STT) and speechSynthesis (TTS) — zero setup, works today. To upgrade to **local, offline, higher quality**: swap STT for Whisper and TTS for Kokoro/Piper in the bridge (the HUD already streams mic audio and plays returned audio — the swap is localized).
+STT and TTS both run **on your machine as ONNX in Node — no Python, no cloud, no API keys**:
+
+- **STT:** Whisper (`whisper-base.en`) via `@huggingface/transformers`. The browser captures raw mic PCM, downsamples to 16 kHz, and ships it to the bridge.
+- **TTS:** Kokoro-82M via `kokoro-js`, streamed back **per sentence** so Jarvis starts talking before the whole reply is synthesized. Default voice `bm_george` (British male).
+
+Models download once on first run (~150 MB total) to the HF cache, then run locally. Configure model/voice/quality in `.env`. **Barge-in** is on — clap or hold Space while Jarvis is talking and he stops to listen.
 
 ## Roadmap
 
-- [ ] Local Whisper STT + Kokoro TTS (offline, better voice)
+- [x] Local Whisper STT + Kokoro TTS (offline)
+- [x] Barge-in (interrupt while speaking)
 - [ ] `fleet.md` nightly auto-refresh (`/schedule`)
 - [ ] Metrics panels on the HUD (RevenueCat / GSC / PostHog cards)
 - [ ] Per-project deep-context files in `hub/projects/`
-- [ ] Token-by-token already on; add barge-in (interrupt while speaking)
+- [ ] AudioWorklet capture (replace deprecated ScriptProcessor)
