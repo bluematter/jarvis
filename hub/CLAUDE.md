@@ -21,6 +21,20 @@ the right MCP/analytics source for its data.
 Cached business metrics live in `metrics/` (revenue, traffic, search). Prefer reading those over
 hitting APIs live, unless he asks for fresh numbers.
 
+## Cross-project memory — USE THIS, don't say you have no history
+You have **claude-mem** tools that index EVERY project and EVERY past session — over a month of
+Michael's work across the whole portfolio, not just this repo. This is your long-term memory. When he
+asks "what are we working on", "what did I do in <project>", "how did we solve X", "what changed
+lately", "did we already try Y" — DO NOT answer from this repo alone or say you have no prior
+sessions. Query claude-mem first:
+- `mcp__plugin_claude-mem__smart_search` / `search` — semantic search across all captured sessions
+- `mcp__plugin_claude-mem__timeline` — recent activity in time order (best for "what have I been up to")
+- `mcp__plugin_claude-mem__get_observations` — pull detail for specific results
+
+Full picture = `fleet.md` (live git state, see its "Active focus" section) + claude-mem (what was
+discussed, decided, and built). For "what are we working on" use both: fleet.md for what's changing,
+claude-mem for the why and the open threads. Mention the project by name when you search.
+
 ## Your data sources (MCP)
 - PostHog — product analytics, funnels, events (currently scoped to BasedHealth project)
 - RevenueCat — subscription revenue across the apps (if configured)

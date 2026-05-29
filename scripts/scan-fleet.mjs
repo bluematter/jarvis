@@ -30,6 +30,7 @@ function describe(dir) {
       const l = raw.replace(/^#+\s*/, "").trim();
       if (!l || l.startsWith("<!--") || l.length <= 8) continue;
       if (/^@?[\w.-]+\.(md|txt)$/i.test(l)) continue; // skip "CLAUDE.md" / "@AGENTS.md" headings
+      if (/provides guidance to claude|bootstrapped with|create-next-app|getting started|table of contents/i.test(l)) continue;
       return l.slice(0, 160);
     }
   }
@@ -43,8 +44,8 @@ const projects = readdirSync(ROOT, { withFileTypes: true })
     const isRepo = existsSync(join(dir, ".git"));
     const branch = isRepo ? git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]) : "";
     const dirty = isRepo ? git(dir, ["status", "--porcelain"]).split("\n").filter(Boolean).length : 0;
-    const last = isRepo ? git(dir, ["log", "-1", "--format=%cr|%s"]) : "";
-    const [ago = "", subject = ""] = last.split("|");
+    const recent = isRepo ? git(dir, ["log", "-3", "--format=%cr|%s"]).split("\n").filter(Boolean) : [];
+    const [ago = "", subject = ""] = (recent[0] || "").split("|");
     let mtime = 0;
     try { mtime = statSync(dir).mtimeMs; } catch {}
     return {
@@ -54,6 +55,7 @@ const projects = readdirSync(ROOT, { withFileTypes: true })
       dirty,
       ago,
       subject: subject.slice(0, 70),
+      recent: recent.map((l) => l.split("|")),
       hasClaudeMd: existsSync(join(dir, "CLAUDE.md")),
       mtime,
     };
@@ -63,6 +65,15 @@ const projects = readdirSync(ROOT, { withFileTypes: true })
 const stamp = new Date().toISOString();
 let md = `# Fleet — live status of every project\n\n`;
 md += `_Generated ${stamp} • ${projects.length} projects • most recently touched first._\n\n`;
+
+// Active focus: the projects with the most recent git activity + their last few commits.
+// This is the fast answer to "what are we working on right now?"
+md += `## Active focus (most recent git activity)\n`;
+for (const p of projects.filter((p) => p.recent?.length).slice(0, 7)) {
+  md += `- **${p.name}** (${p.branch || "—"}${p.dirty ? `, ⚠️ ${p.dirty} uncommitted` : ""}) — ${p.desc}\n`;
+  for (const [cago, csub] of p.recent) md += `    - ${cago}: ${csub}\n`;
+}
+md += `\n`;
 md += `| Project | What it is | Branch | Uncommitted | Last commit |\n`;
 md += `|---|---|---|---|---|\n`;
 for (const p of projects) {
