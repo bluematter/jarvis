@@ -244,6 +244,7 @@ httpServer.listen(PORT, () => {
     ttsModel: env.JARVIS_TTS_MODEL,
     dtype: env.JARVIS_TTS_DTYPE,
     voice: env.JARVIS_VOICE,
+    speed: env.JARVIS_TTS_SPEED ? Number(env.JARVIS_TTS_SPEED) : undefined,
     log: (m) => console.log("  " + m),
   }).catch((e) => console.log("  voice FAILED: " + (e?.message || e)));
 });

@@ -96,7 +96,7 @@
   .topbar .clk .time { font-family: var(--mono); font-size: 1.25rem; color: #e8f8ff; letter-spacing: .02em; line-height: 1; }
   .topbar .clk .date { font-family: var(--mono); font-size: .58rem; color: #4d6f7e; margin-top: 5px; letter-spacing: .14em; }
 
-  canvas#orb { width: min(42vh, 480px); height: min(42vh, 480px); flex: none; filter: drop-shadow(0 0 50px rgba(56,225,255,.18)); }
+  canvas#orb { width: min(44vh, 500px); height: min(44vh, 500px); flex: none; filter: drop-shadow(0 0 60px rgba(56,225,255,.16)); }
 
   .state { display: inline-flex; align-items: center; gap: 10px; letter-spacing: .35em; text-transform: uppercase; font-size: .72rem; font-weight: 500; color: var(--c); opacity: .95; transition: color .35s; }
   .state::before, .state::after { content: ""; width: 22px; height: 1px; background: linear-gradient(90deg, transparent, currentColor); }
@@ -383,20 +383,22 @@ let t = 0;
 (function draw() {
   t += 0.016; const w = cv.width, h = cv.height, cx = w/2, cy = h/2;
   g.clearRect(0, 0, w, h);
-  const base = Math.min(w, h) * 0.26;
+  const base = Math.min(w, h) * 0.20;
   const rgb = ORB_RGB[mode] || ORB_RGB.idle;
   const mix = (a) => `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a})`;
-  // real audio amplitude (mic when listening, Jarvis voice when speaking)
+  // real audio amplitude (mic when listening, Jarvis voice when speaking) — calmed so the
+  // orb breathes instead of ballooning past the canvas
   let target = mode === "listening" && micAnalyser ? readPeak(micAnalyser)
              : mode === "speaking" && playAnalyser ? readPeak(playAnalyser) : 0;
-  level = level * 0.78 + target * 0.22;
-  const react = mode === "listening" ? level * base * 1.3
-              : mode === "speaking" ? (0.08 + level * 1.2) * base
+  level = level * 0.8 + target * 0.2;
+  const react = mode === "listening" ? level * base * 0.55
+              : mode === "speaking" ? (0.05 + level * 0.5) * base
               : mode === "thinking" ? (Math.sin(t*6)*0.5+0.5) * base * 0.28
               : Math.sin(t*1.4) * base * 0.05;
   const R = base + react;
-  // bloom
-  const bloom = g.createRadialGradient(cx,cy,R*0.2,cx,cy,R*2.1);
+  // bloom — clamp the outer radius so it always fades to 0 INSIDE the canvas (no square edge)
+  const bloomR = Math.min(R * 2.1, Math.min(w, h) * 0.49);
+  const bloom = g.createRadialGradient(cx, cy, R * 0.2, cx, cy, bloomR);
   bloom.addColorStop(0,mix(.16)); bloom.addColorStop(.5,mix(.06)); bloom.addColorStop(1,mix(0));
   g.fillStyle = bloom; g.fillRect(0,0,w,h);
   // halos
@@ -434,7 +436,7 @@ let t = 0;
   g.restore();
   // particles
   const energy = mode === "idle" ? 0.4 : 1;
-  for (const p of parts){ p.a += 0.004*p.s*energy; const rr=R+base*(0.42+p.r*0.4);
+  for (const p of parts){ p.a += 0.004*p.s*energy; const rr=R+base*(0.30+p.r*0.3);
     const px=cx+Math.cos(p.a)*rr, py=cy+Math.sin(p.a)*rr*0.96, sz=(0.6+p.z*1.8)*(w*0.0016);
     g.beginPath(); g.arc(px,py,sz,0,Math.PI*2); g.fillStyle=mix(0.18+p.z*0.5); g.fill(); }
   // specular highlight

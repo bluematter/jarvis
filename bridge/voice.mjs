@@ -9,6 +9,7 @@ import { KokoroTTS } from "kokoro-js";
 let transcriber = null;
 let tts = null;
 let voice = "bm_george";
+let speed = 1.12; // slightly quicker than 1.0 — more natural, less ponderous
 let readyPromise = null;
 
 export function warmVoice(opts = {}) {
@@ -18,9 +19,11 @@ export function warmVoice(opts = {}) {
     ttsModel = "onnx-community/Kokoro-82M-v1.0-ONNX",
     dtype = "q8",
     voice: v = "bm_george",
+    speed: sp = 1.12,
     log = () => {},
   } = opts;
   voice = v;
+  speed = sp;
   readyPromise = (async () => {
     log(`STT  loading ${sttModel} …`);
     transcriber = await pipeline("automatic-speech-recognition", sttModel, { dtype: "q8" });
@@ -43,7 +46,7 @@ export async function transcribe(audio) {
 export async function speak(text, onChunk) {
   await warmVoice();
   for (const part of splitSentences(text)) {
-    const audio = await tts.generate(part, { voice });
+    const audio = await tts.generate(part, { voice, speed });
     onChunk(Buffer.from(audio.toWav()));
   }
 }
