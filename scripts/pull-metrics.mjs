@@ -14,7 +14,7 @@ const PROMPT = `You are refreshing Jarvis's cached business metrics. Use the ava
 
 Do all of this, in order:
 
-1. RevenueCat (revenuecat MCP): pull the key revenue picture across all apps/projects — active subscriptions, trials, MRR/revenue, and notable week-over-week movement. Write metrics/revenuecat.md.
+1. RevenueCat: there is one MCP server per project — "revenuecat-gluely" (Gluely) and "revenuecat-basedhealth" (BasedHealth). Pull the revenue picture for EACH — active subscriptions, trials, MRR/revenue, and notable week-over-week movement — and label which product each number belongs to. Write metrics/revenuecat.md.
 
 2. Google Search Console (gsc MCP): list properties, then for each (or the top ones) pull the last 28 days of search performance — total clicks, impressions, average CTR and position, plus top queries and top pages, and any notable change vs the prior period. Write metrics/gsc.md.
 
