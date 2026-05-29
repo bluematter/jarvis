@@ -8,6 +8,7 @@ node_modules/
 hub/fleet.md
 hub/fleet.json
 hub/identity.md
+hub/ads/
 hub/state/
 hub/metrics/*.json
 hub/metrics/*.md
