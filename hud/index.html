@@ -75,7 +75,7 @@
   .frow > span:last-child { white-space: nowrap; flex: none; }
 
   /* stage */
-  .stage { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px; padding: 0 40px 150px; }
+  .stage { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; padding: 0 40px 172px; }
   .stage::before { content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
     background: repeating-radial-gradient(circle at 50% 44%, transparent 0 44px, rgba(56,225,255,.045) 44px 45px);
     -webkit-mask: radial-gradient(circle at 50% 44%, #000 6%, transparent 56%); mask: radial-gradient(circle at 50% 44%, #000 6%, transparent 56%); }
@@ -94,13 +94,13 @@
   .topbar .clk .time { font-family: var(--mono); font-size: 1.25rem; color: #e8f8ff; letter-spacing: .02em; line-height: 1; }
   .topbar .clk .date { font-family: var(--mono); font-size: .58rem; color: #4d6f7e; margin-top: 5px; letter-spacing: .14em; }
 
-  canvas#orb { width: min(48vh, 540px); height: min(48vh, 540px); filter: drop-shadow(0 0 50px rgba(56,225,255,.18)); }
+  canvas#orb { width: min(42vh, 480px); height: min(42vh, 480px); flex: none; filter: drop-shadow(0 0 50px rgba(56,225,255,.18)); }
 
   .state { display: inline-flex; align-items: center; gap: 10px; letter-spacing: .35em; text-transform: uppercase; font-size: .72rem; font-weight: 500; color: var(--c); opacity: .95; transition: color .35s; }
   .state::before, .state::after { content: ""; width: 22px; height: 1px; background: linear-gradient(90deg, transparent, currentColor); }
   .state::after { background: linear-gradient(90deg, currentColor, transparent); }
   .caption { max-width: 760px; text-align: center; font-size: 1.5rem; line-height: 1.45; min-height: 2.4em; color: #cfeefb;
-    max-height: 36vh; overflow-y: auto; padding: 0 10px;
+    max-height: 24vh; overflow-y: auto; padding: 0 10px;
     text-shadow: 0 0 24px rgba(56,225,255,.25); text-wrap: pretty; letter-spacing: -.005em; }
   .caption::-webkit-scrollbar { width: 0; }
 
@@ -180,7 +180,7 @@ const $ = (id) => document.getElementById(id);
 const caption = $("caption"), stateEl = $("state"), feed = $("feed"), talk = $("talk"), conn = $("conn");
 const hint = $("hint"), meter = $("meter"), mlevel = $("mlevel"), q = $("q"), results = $("results");
 const tbBridge = $("tbBridge"), tbVoice = $("tbVoice"), tbFleet = $("tbFleet");
-let searchAcc = "", rbodyEl = null, restored = false;
+let searchAcc = "", rbodyEl = null;
 
 // state -> pill color (matches the orb palette)
 const STATE_COLOR = { idle:"#2878a0", connecting:"#2878a0", offline:"#ff5a5a", listening:"#38e1ff", transcribing:"#38e1ff", thinking:"#b478ff", speaking:"#78ffc8" };
@@ -206,7 +206,7 @@ function connect() {
 }
 let streamed = "";
 function handle(m) {
-  if (m.type === "voice-ready") { tbVoice.classList.add("on"); setState("idle", restored ? null : "Online. Say the word."); }
+  if (m.type === "voice-ready") { tbVoice.classList.add("on"); setState("idle", "Online. Say the word."); }
   else if (m.type === "history") renderHistory(m.items);
   else if (m.type === "transcribing") { setState("transcribing", "…"); mode = "thinking"; }
   else if (m.type === "transcript") { if (m.text) addMe(m.text); }
@@ -239,9 +239,8 @@ function addJarvis(text) {
 }
 function renderHistory(items) {
   if (!items || !items.length) return;
-  feed.innerHTML = ""; let lastJ = "";
-  for (const it of items) { if (it.role === "you") addMe(it.text); else { addJarvis(it.text); lastJ = it.text; } }
-  if (lastJ) { restored = true; setState("idle", lastJ); caption.scrollTop = 0; }
+  feed.innerHTML = ""; // replay into the rail only — center stays clean on reload
+  for (const it of items) { if (it.role === "you") addMe(it.text); else addJarvis(it.text); }
 }
 function doSearch(text) {
   if (!wsReady) return;
