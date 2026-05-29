@@ -12,10 +12,12 @@
   #app { height: 100%; display: grid; grid-template-columns: 360px 1fr 360px; }
   @media (max-width: 1100px) { #app { grid-template-columns: 1fr; } .rail.left, .rail { display: none; } }
   .stage { position: relative; display: flex; flex-direction: column; align-items: center;
-    justify-content: center; gap: 32px; }
-  canvas#orb { width: min(46vh, 520px); height: min(46vh, 520px); }
-  .caption { max-width: 70%; text-align: center; font-size: 1.7rem; line-height: 1.45;
-    min-height: 2.4em; text-shadow: 0 0 24px rgba(56,225,255,.25); }
+    justify-content: center; gap: 22px; padding: 24px 0 130px; }
+  canvas#orb { width: min(34vh, 380px); height: min(34vh, 380px); flex: none; }
+  .caption { max-width: 760px; text-align: center; font-size: 1.4rem; line-height: 1.45;
+    min-height: 2.4em; max-height: 38vh; overflow-y: auto; padding: 0 10px;
+    text-shadow: 0 0 24px rgba(56,225,255,.25); }
+  .caption::-webkit-scrollbar { width: 0; }
   .state { letter-spacing: .35em; text-transform: uppercase; font-size: .72rem; color: var(--c);
     opacity: .8; }
   .hint { position: absolute; bottom: 30px; font-size: .8rem; color: #4a6675; }
@@ -108,9 +110,9 @@ function handle(m) {
   else if (m.type === "transcribing") { setState("transcribing", "…"); mode = "thinking"; }
   else if (m.type === "transcript") { if (m.text) addMe(m.text); }
   else if (m.type === "thinking") { streamed = ""; setState("thinking", "…"); mode = "thinking"; }
-  else if (m.type === "delta") { streamed += m.text; caption.textContent = streamed; }
+  else if (m.type === "delta") { streamed += m.text; caption.textContent = streamed; caption.scrollTop = caption.scrollHeight; }
   else if (m.type === "tool") addTool(m.name, m.input);
-  else if (m.type === "result") { const t = m.text || streamed; caption.textContent = t || "Done."; }
+  else if (m.type === "result") { const t = m.text || streamed; caption.textContent = t || "Done."; caption.scrollTop = 0; }
   else if (m.type === "speak-start") { mode = "speaking"; setState("speaking", caption.textContent); }
   else if (m.type === "speak-end") { speakEnded = true; if (!aplaying) finishSpeaking(); }
   else if (m.type === "idle") { mode = "idle"; setState("idle", caption.textContent); }
