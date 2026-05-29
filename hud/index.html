@@ -142,6 +142,37 @@
   .results .rq a:hover { color: var(--c); }
   .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:#2a4350; }
   .dot.on { background: #2ecc71; box-shadow: 0 0 8px #2ecc71; }
+  /* ---- work-order board (modal) ---- */
+  .board { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+    background: rgba(2,6,11,.66); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+  .board-card { width: min(1200px, 94vw); height: min(760px, 88vh); background: rgba(6,14,22,.92);
+    border: 1px solid rgba(56,225,255,.16); border-radius: 14px; box-shadow: 0 30px 90px rgba(0,0,0,.6);
+    display: flex; flex-direction: column; overflow: hidden; }
+  .board-h { display: flex; justify-content: space-between; align-items: center; padding: 16px 22px;
+    border-bottom: 1px solid rgba(56,225,255,.1); letter-spacing: .14em; text-transform: uppercase;
+    font-size: .8rem; color: #8fd2ea; }
+  .board-h a { color: #4d6f7e; cursor: pointer; font-size: 1.1rem; } .board-h a:hover { color: var(--c); }
+  .cols { flex: 1; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1px; background: rgba(56,225,255,.08); overflow: hidden; }
+  .kcol { background: #050f18; display: flex; flex-direction: column; overflow: hidden; }
+  .kcol h3 { font-size: .64rem; letter-spacing: .22em; text-transform: uppercase; color: #4d6f7e; padding: 14px 16px 10px; font-weight: 500; }
+  .kbody { flex: 1; overflow-y: auto; padding: 0 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+  .kbody::-webkit-scrollbar { width: 0; }
+  .kempty { color: #2f5263; font-size: .76rem; padding: 8px 2px; font-style: italic; }
+  .kcard { background: rgba(8,18,28,.8); border: 1px solid rgba(56,225,255,.12); border-radius: 9px; padding: 12px 13px; animation: pop .25s ease; }
+  .kcard .krepo { font-family: var(--mono); font-size: .6rem; letter-spacing: .08em; text-transform: uppercase; color: var(--c); background: rgba(56,225,255,.08); padding: 2px 7px; border-radius: 5px; }
+  .kcard .ktitle { font-size: .9rem; color: #e8f8ff; font-weight: 500; margin: 8px 0 6px; line-height: 1.3; }
+  .kcard .kbrief { font-size: .76rem; color: #6f95a8; line-height: 1.45; max-height: 4.4em; overflow: hidden; }
+  .kbtn { margin-top: 11px; width: 100%; padding: 8px; background: rgba(56,225,255,.1); border: 1px solid rgba(56,225,255,.3);
+    color: var(--c); border-radius: 7px; font-family: var(--font); font-size: .8rem; cursor: pointer; transition: .15s; }
+  .kbtn:hover { background: var(--c); color: #02121a; } .kbtn:disabled { opacity: .5; cursor: default; }
+  .kcard.kprog { border-color: rgba(180,120,255,.35); }
+  .kcard .kact { display: flex; align-items: center; gap: 8px; font-size: .78rem; color: #b9a0e8; margin-top: 8px; }
+  .kcard .kbranch { font-family: var(--mono); font-size: .62rem; color: #4d6f7e; margin-top: 7px; }
+  .kcard.kdone { border-color: rgba(46,204,113,.3); } .kcard.kfail { border-color: rgba(255,90,90,.35); }
+  .kcard .ksum { font-size: .76rem; color: #9fc0cf; line-height: 1.45; margin-top: 7px; }
+  .kcard .kerr { font-size: .72rem; color: #ff6b6b; margin-top: 6px; }
+  .spin { width: 11px; height: 11px; border: 2px solid rgba(180,120,255,.3); border-top-color: #b478ff; border-radius: 50%; animation: spin .7s linear infinite; flex: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
@@ -161,6 +192,7 @@
         <span class="chip"><span class="dot" id="tbVoice"></span>Voice</span>
         <span class="chip" id="tbFleet"></span>
         <span class="chip brief" id="brief" title="Morning briefing (press B)">◐ Brief</span>
+        <span class="chip brief" id="boardBtn" title="Work orders (press O)">⊞ Work</span>
       </div>
       <div class="clk"><div class="time" id="clkTime">--:--</div><div class="date" id="clkDate"></div></div>
     </div>
@@ -176,6 +208,16 @@
   <div class="rail right">
     <h2><span class="dot" id="conn"></span>Activity</h2>
     <div class="feed" id="feed"></div>
+  </div>
+</div>
+<div id="board" class="board" hidden>
+  <div class="board-card">
+    <div class="board-h"><span>⊞ Work Orders</span><a id="boardClose" title="Close (Esc)">✕</a></div>
+    <div class="cols">
+      <div class="kcol"><h3>Proposed</h3><div class="kbody" id="k-proposed"></div></div>
+      <div class="kcol"><h3>In Progress</h3><div class="kbody" id="k-in_progress"></div></div>
+      <div class="kcol"><h3>Done · Review</h3><div class="kbody" id="k-done"></div></div>
+    </div>
   </div>
 </div>
 <script>
@@ -372,6 +414,38 @@ addEventListener("keyup", (e) => { if (e.code === "Space" && !typing(e)) { e.pre
 function sendBrief() { if (!wsReady || mode === "thinking") return; ws.send(JSON.stringify({ type: "brief" })); }
 briefBtn.onclick = sendBrief;
 addEventListener("keydown", (e) => { if ((e.key === "b" || e.key === "B") && !typing(e)) { e.preventDefault(); sendBrief(); } });
+
+// ---------- work-order board (propose → approve → dispatch) ----------
+const board = $("board"), boardBtn = $("boardBtn");
+let boardPoll = null;
+function openBoard() { board.hidden = false; refreshOrders(); boardPoll = setInterval(refreshOrders, 2000); }
+function closeBoard() { board.hidden = true; if (boardPoll) { clearInterval(boardPoll); boardPoll = null; } }
+boardBtn.onclick = () => (board.hidden ? openBoard() : closeBoard());
+$("boardClose").onclick = closeBoard;
+addEventListener("keydown", (e) => {
+  if ((e.key === "o" || e.key === "O") && !typing(e)) { e.preventDefault(); board.hidden ? openBoard() : closeBoard(); }
+  else if (e.key === "Escape" && !board.hidden) closeBoard();
+});
+const kempty = (t) => `<div class="kempty">${escape(t)}</div>`;
+function orderCard(o) {
+  const repo = `<span class="krepo">${escape(o.repo)}</span>`;
+  if (o.status === "proposed" || o.status === "failed") {
+    return `<div class="kcard ${o.status === "failed" ? "kfail" : ""}">${repo}<div class="ktitle">${escape(o.title)}</div><div class="kbrief">${escape((o.brief || "").slice(0, 200))}</div>${o.status === "failed" ? `<div class="kerr">${escape(o.summary || "failed")}</div>` : ""}<button class="kbtn" data-dispatch="${escape(o.id)}">▶ ${o.status === "failed" ? "Retry" : "Dispatch"}</button></div>`;
+  }
+  if (o.status === "in_progress") {
+    return `<div class="kcard kprog">${repo}<div class="ktitle">${escape(o.title)}</div><div class="kact"><span class="spin"></span>${escape(o.lastActivity || "working…")}</div><div class="kbranch">${escape(o.branch || "")}</div></div>`;
+  }
+  return `<div class="kcard kdone">${repo}<div class="ktitle">${escape(o.title)}</div><div class="ksum">${escape((o.summary || "").slice(0, 240))}</div><div class="kbranch">↳ ${escape(o.branch || "")}</div></div>`;
+}
+async function refreshOrders() {
+  let orders; try { orders = await (await fetch("/orders", { cache: "no-store" })).json(); } catch { return; }
+  const cols = { proposed: [], in_progress: [], done: [] };
+  for (const o of orders) { const s = o.status === "failed" ? "proposed" : (cols[o.status] ? o.status : "proposed"); cols[s].push(o); }
+  $("k-proposed").innerHTML = cols.proposed.map(orderCard).join("") || kempty("No proposals yet — ask Jarvis to queue work.");
+  $("k-in_progress").innerHTML = cols.in_progress.map(orderCard).join("") || kempty("Idle.");
+  $("k-done").innerHTML = cols.done.map(orderCard).join("") || kempty("Nothing shipped yet.");
+  board.querySelectorAll("[data-dispatch]").forEach((b) => (b.onclick = () => { ws.send(JSON.stringify({ type: "dispatch", id: b.dataset.dispatch })); b.textContent = "dispatching…"; b.disabled = true; }));
+}
 
 // ---------- the ORB (reticle) ----------
 const cv = $("orb"), g = cv.getContext("2d");

@@ -78,6 +78,8 @@ Re-register or inspect anytime with `claude mcp list`. `hub/metrics/` is gitigno
 - [x] Conversation persistence + history replay across reload; "search my history" (claude-mem)
 - [x] Always-on launchd service + auto-refresh every 15 min (`scripts/install-service.sh`)
 - [x] Morning briefing — spoken, auto once/day on first interaction (or `B` / the topbar chip)
+- [x] Orchestrator — propose → approve → dispatch work-orders to repos in **isolated git worktrees**
+      (HUD board, press `O`); a `canUseTool` guard keeps each dispatched agent inside its worktree
 - [ ] Per-project deep-context files in `hub/projects/`
 - [ ] AudioWorklet capture (replace deprecated ScriptProcessor)
 

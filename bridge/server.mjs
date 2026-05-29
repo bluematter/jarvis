@@ -4,7 +4,8 @@
 // The browser is pure I/O. All the brains live here + in Claude Code.
 
 import { createServer } from "node:http";
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { readFileSync, existsSync, readdirSync, appendFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, extname } from "node:path";
 import { WebSocketServer } from "ws";
@@ -39,6 +40,11 @@ const httpServer = createServer((req, res) => {
   if (req.url.split("?")[0] === "/state") {
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
     res.end(JSON.stringify(readState()));
+    return;
+  }
+  if (req.url.split("?")[0] === "/orders") {
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify(listOrders()));
     return;
   }
   const p = req.url === "/" ? "/index.html" : req.url.split("?")[0];
@@ -84,6 +90,89 @@ function refreshData() {
   }
 }
 
+// --- work-orders: Jarvis PROPOSES (writes hub/orders/<id>.json), Michael APPROVES by dispatching
+// from the HUD board, the bridge DISPATCHES it into an isolated git worktree on a jarvis/<id> branch.
+const ORDERS_DIR = join(HUB, "orders");
+try { mkdirSync(ORDERS_DIR, { recursive: true }); } catch {}
+const pexec = promisify(execFile);
+const git = (cwd, args) => pexec("git", args, { cwd });
+const orderPath = (id) => join(ORDERS_DIR, String(id).replace(/[^a-z0-9_-]/gi, "") + ".json");
+const readOrder = (id) => readJSON(orderPath(id), null);
+const writeOrder = (o) => { try { writeFileSync(orderPath(o.id), JSON.stringify(o, null, 2)); } catch {} };
+const listOrders = () => {
+  try {
+    return readdirSync(ORDERS_DIR).filter((f) => f.endsWith(".json"))
+      .map((f) => readJSON(join(ORDERS_DIR, f), null)).filter(Boolean)
+      .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
+  } catch { return []; }
+};
+
+function dispatchPrompt(order, branch) {
+  return `You are executing a work-order dispatched by Jarvis.
+
+CRITICAL — ISOLATION: Your current working directory IS your entire sandbox — an isolated git
+worktree already checked out on branch "${branch}". Everything you need is here.
+- Use RELATIVE paths only. NEVER use an absolute path. NEVER run \`cd\`.
+- A separate main checkout of this repo exists elsewhere — you must NOT find it, cd to it, or write
+  to it. Stay in your current directory for everything.
+- Run git directly (you're already on the right branch): \`git add -A && git commit -m "…"\`.
+  Do NOT checkout/switch branches, do NOT push.
+
+WORK-ORDER: ${order.title}
+
+${order.brief}
+
+Do the work idiomatically. When done, commit on this branch, then reply with a 2-3 sentence summary of
+exactly what you changed and any follow-up. If the task is unclear or unsafe, make NO changes and say why.`;
+}
+
+// hard guard: keep the dispatched agent inside its worktree — no writes outside, no cd / no main checkout
+function dispatchPolicy(wt, repoPath) {
+  return (name, input) => {
+    if (["Write", "Edit", "MultiEdit"].includes(name)) {
+      const p = input?.file_path || input?.path || "";
+      const abs = p.startsWith("/") ? p : join(wt, p);
+      if (!abs.startsWith(wt)) return { behavior: "deny", message: "stay inside your worktree (relative paths only)" };
+    }
+    if (name === "Bash") {
+      const c = String(input?.command || "");
+      if (c.includes(repoPath) || /(^|[\s;&|(])cd\s+\//.test(c))
+        return { behavior: "deny", message: "work only in your current directory — no cd, no main checkout" };
+    }
+    return { behavior: "allow", updatedInput: input };
+  };
+}
+
+async function dispatchOrder(id) {
+  const order = readOrder(id);
+  if (!order || (order.status !== "proposed" && order.status !== "failed")) return;
+  const repoPath = join(ROOT, "..", order.repo);
+  if (!existsSync(join(repoPath, ".git"))) { order.status = "failed"; order.summary = "repo not found: " + order.repo; writeOrder(order); return; }
+  const branch = "jarvis/" + order.id;
+  const wt = join(STATE, "wt", String(order.id).replace(/[^a-z0-9_-]/gi, ""));
+  order.status = "in_progress"; order.branch = branch; order.lastActivity = "preparing worktree…"; order.summary = null; writeOrder(order);
+  try {
+    try { await git(repoPath, ["worktree", "remove", "--force", wt]); } catch {}
+    try { await git(repoPath, ["branch", "-D", branch]); } catch {}
+    await git(repoPath, ["worktree", "add", "-b", branch, wt, "HEAD"]);
+    let out = "";
+    const stream = query({
+      prompt: dispatchPrompt(order, branch),
+      options: { cwd: wt, model: MODEL, permissionMode: "default", canUseTool: dispatchPolicy(wt, repoPath), settingSources: ["user", "project"] },
+    });
+    for await (const ev of stream) {
+      if (ev.type === "assistant") {
+        for (const b of ev.message?.content || []) if (b.type === "tool_use") {
+          order.lastActivity = b.name + (summarizeInput(b.input) ? " · " + summarizeInput(b.input) : ""); writeOrder(order);
+        }
+      } else if (ev.type === "result") out = ev.result || out;
+    }
+    order.status = "done"; order.summary = out.trim() || "Done."; order.lastActivity = null; order.worktree = wt; writeOrder(order);
+  } catch (e) {
+    order.status = "failed"; order.summary = String(e?.message || e).slice(0, 300); order.lastActivity = null; writeOrder(order);
+  }
+}
+
 // --- websocket bridge ---
 const wss = new WebSocketServer({ server: httpServer });
 
@@ -119,6 +208,7 @@ wss.on("connection", (ws) => {
     if (msg.type === "prompt" && msg.text?.trim()) return runTurn(msg.text);
     if (msg.type === "search" && msg.text?.trim()) return runSearch(msg.text);
     if (msg.type === "brief") return runBrief();
+    if (msg.type === "dispatch" && msg.id) { dispatchOrder(msg.id); return; } // fire-and-forget; HUD polls /orders
   });
 
   // read-only history search over claude-mem (separate from the conversation; no TTS, no writes)
