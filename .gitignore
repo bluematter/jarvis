@@ -6,6 +6,7 @@ node_modules/
 
 # Generated brain state (machine-local, can be huge / contains business data)
 hub/fleet.md
+hub/fleet.json
 hub/metrics/*.json
 hub/metrics/*.md
 !hub/metrics/.gitkeep

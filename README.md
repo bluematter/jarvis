@@ -31,7 +31,7 @@ Open **http://localhost:4317** (Chrome recommended for voice). Hold **Space** or
 - **`hub/`** is the brain. `hub/CLAUDE.md` is the Jarvis persona; `hub/fleet.md` (generated) is the live status of every project; `hub/metrics/` caches business data. Claude Code runs *from this directory*, so it sees all of it.
 - **`scripts/scan-fleet.mjs`** walks `PROJECTS_ROOT`, reads each project's CLAUDE.md + git state, and writes `fleet.md`. Re-run it (or schedule it) to keep Jarvis current.
 - **`bridge/server.mjs`** drives Claude Code via the Agent SDK with `settingSources: ["user","project"]`, so it loads `hub/CLAUDE.md` **and your existing MCP servers** (PostHog, RevenueCat, GSC, Gmail…). Sessions resume across turns, so it's a continuous conversation.
-- **`hud/index.html`** is the interface: reactive orb, double-clap wake, push-to-talk, live tool-activity feed.
+- **`hud/index.html`** is the interface: a 3-column dashboard — **left:** live cards (Fleet + Revenue + Search + Product, polled from `/state`); **center:** the reactive orb, double-clap wake, push-to-talk; **right:** live tool-activity feed. The Fleet card populates immediately from `pnpm scan`; the rest fill in after `pnpm metrics`.
 
 ## Voice: fully local & offline
 
@@ -63,7 +63,7 @@ Re-register or inspect anytime with `claude mcp list`. `hub/metrics/` is gitigno
 - [x] Local Whisper STT + Kokoro TTS (offline)
 - [x] Barge-in (interrupt while speaking)
 - [x] RevenueCat + GSC + PostHog via MCP, cached to `hub/metrics/`
-- [ ] Metrics panels on the HUD (revenue / search / product cards)
+- [x] HUD dashboard cards (Fleet + Revenue + Search + Product), polled live
 - [ ] `fleet.md` + metrics nightly auto-refresh (`/schedule`)
 - [ ] Per-project deep-context files in `hub/projects/`
 - [ ] AudioWorklet capture (replace deprecated ScriptProcessor)

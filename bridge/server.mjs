@@ -21,7 +21,19 @@ const PERMISSION_MODE = env.JARVIS_PERMISSION_MODE || "bypassPermissions";
 
 // --- static HUD ---
 const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" };
+const readJSON = (p, fb) => { try { return JSON.parse(readFileSync(p, "utf8")); } catch { return fb; } };
+const readState = () => {
+  const fleet = readJSON(join(HUB, "fleet.json"), null);
+  const metrics = readJSON(join(HUB, "metrics", "cards.json"), null);
+  return { fleet, cards: metrics?.cards || [], metricsUpdatedAt: metrics?.updatedAt || null };
+};
+
 const httpServer = createServer((req, res) => {
+  if (req.url.split("?")[0] === "/state") {
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify(readState()));
+    return;
+  }
   const p = req.url === "/" ? "/index.html" : req.url.split("?")[0];
   const file = join(HUD_DIR, p);
   if (!file.startsWith(HUD_DIR) || !existsSync(file)) {

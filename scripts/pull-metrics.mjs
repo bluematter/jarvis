@@ -22,7 +22,26 @@ Do all of this, in order:
 
 4. Write metrics/summary.md: a tight, glanceable digest with the headline numbers from all three sources and the 3-5 most notable changes or things worth Michael's attention.
 
-5. Write metrics/_updated.json: {"updatedAt":"<ISO timestamp>","sources":{"revenuecat":"ok|not-configured|error","gsc":"...","posthog":"..."}}
+5. Write metrics/cards.json for the HUD dashboard cards. EXACT schema (valid JSON, no comments):
+{
+  "updatedAt": "<ISO timestamp>",
+  "cards": [
+    {
+      "source": "revenuecat",
+      "title": "Revenue",
+      "status": "ok" | "not-configured" | "error",
+      "tiles": [
+        { "label": "MRR", "value": "$4,210", "delta": "+5.2%", "dir": "up" }
+      ],
+      "note": "optional one-liner"
+    },
+    { "source": "gsc", "title": "Search · 28d", "status": "...", "tiles": [...] },
+    { "source": "posthog", "title": "Product", "status": "...", "tiles": [...] }
+  ]
+}
+Rules: include all three cards in that order. Each "tile" value is a short preformatted string (already with $, %, or k/m suffixes). "delta" is optional ("+5.2%", "-3%", or omit); "dir" is "up" | "down" | "flat" describing the change direction (omit if no delta). Aim for 2-4 tiles per card. If a source is not configured, set its status and tiles: [] and put a short hint in "note" (e.g. "Set REVENUECAT_V2_API_KEY, then run pnpm metrics").
+
+6. Write metrics/_updated.json: {"updatedAt":"<ISO timestamp>","sources":{"revenuecat":"ok|not-configured|error","gsc":"...","posthog":"..."}}
 
 If a source is not configured or returns an auth error, do NOT fail — write a one-line "not configured yet" note in its file and mark it accordingly in _updated.json, then continue. Keep each file short.`;
 

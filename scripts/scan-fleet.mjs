@@ -81,4 +81,15 @@ if (stale.length) {
 }
 
 writeFileSync(join(HUB, "fleet.md"), md);
-console.log(`fleet.md written — ${projects.length} projects scanned.`);
+
+// compact summary for the HUD Fleet card
+const summary = {
+  updatedAt: stamp,
+  total: projects.length,
+  dirty: projects.filter((p) => p.dirty > 0).length,
+  missingDocs: noDocs.length,
+  recent: projects.slice(0, 6).map((p) => ({ name: p.name, ago: p.ago || "—", dirty: p.dirty, branch: p.branch })),
+};
+writeFileSync(join(HUB, "fleet.json"), JSON.stringify(summary, null, 2));
+
+console.log(`fleet.md + fleet.json written — ${projects.length} projects scanned.`);
