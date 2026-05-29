@@ -61,6 +61,7 @@
   .tool b { color: var(--c); }
   .tool small { color: #4a6675; display: block; margin-top: 2px; word-break: break-all; }
   .me { font-size: .82rem; color: #9fb4c0; border-left: 2px solid #1d3340; padding: 4px 0 4px 11px; }
+  .jv { font-size: .82rem; color: #8fd2ea; padding: 5px 0 9px; border-bottom: 1px solid #0c1f2b; }
   @keyframes pop { from { opacity: 0; transform: translateY(6px); } }
   .btn { position: absolute; bottom: 70px; width: 78px; height: 78px; border-radius: 50%;
     border: 1px solid #1d3340; background: #07151f; color: var(--c); font-size: 1.6rem; cursor: pointer;
@@ -106,7 +107,8 @@ function connect() {
 }
 let streamed = "";
 function handle(m) {
-  if (m.type === "voice-ready") setState("idle", "Online. Say the word.");
+  if (m.type === "voice-ready") setState("idle", restored ? null : "Online. Say the word.");
+  else if (m.type === "history") renderHistory(m.items);
   else if (m.type === "transcribing") { setState("transcribing", "…"); mode = "thinking"; }
   else if (m.type === "transcript") { if (m.text) addMe(m.text); }
   else if (m.type === "thinking") { streamed = ""; setState("thinking", "…"); mode = "thinking"; }
@@ -128,6 +130,17 @@ function addTool(name, input) {
 function addMe(text) {
   const d = document.createElement("div"); d.className = "me"; d.textContent = "“" + text + "”";
   feed.appendChild(d); feed.scrollTop = feed.scrollHeight;
+}
+function addJarvis(text) {
+  const d = document.createElement("div"); d.className = "jv"; d.textContent = text;
+  feed.appendChild(d); feed.scrollTop = feed.scrollHeight;
+}
+let restored = false;
+function renderHistory(items) {
+  if (!items || !items.length) return;
+  feed.innerHTML = ""; let lastJ = "";
+  for (const it of items) { if (it.role === "you") addMe(it.text); else { addJarvis(it.text); lastJ = it.text; } }
+  if (lastJ) { restored = true; setState("idle", lastJ); caption.scrollTop = 0; }
 }
 const escape = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 function setState(s, cap) { stateEl.textContent = s; if (cap != null) caption.textContent = cap; }

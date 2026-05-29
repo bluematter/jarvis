@@ -4,7 +4,7 @@
 // The browser is pure I/O. All the brains live here + in Claude Code.
 
 import { createServer } from "node:http";
-import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, appendFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, extname } from "node:path";
 import { WebSocketServer } from "ws";
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -50,16 +50,35 @@ const httpServer = createServer((req, res) => {
   res.end(readFileSync(file));
 });
 
+// --- persistence: survive HUD refresh (resume the session + replay transcript) ---
+// Note: long-term/cross-project history already lives in claude-mem's SQLite. This is
+// just enough local state to make a browser refresh continuous, no DB needed.
+const STATE = join(HUB, "state");
+try { mkdirSync(STATE, { recursive: true }); } catch {}
+const SESSION_FILE = join(STATE, "session.json");
+const TRANSCRIPT_FILE = join(STATE, "transcript.jsonl");
+let lastSession = readJSON(SESSION_FILE, {})?.id || null;
+const saveSession = (id) => { if (!id) return; lastSession = id; try { writeFileSync(SESSION_FILE, JSON.stringify({ id, updatedAt: new Date().toISOString() })); } catch {} };
+const clearSession = () => { lastSession = null; try { writeFileSync(SESSION_FILE, "{}"); } catch {} };
+const appendTurn = (role, text) => { if (!text) return; try { appendFileSync(TRANSCRIPT_FILE, JSON.stringify({ t: Date.now(), role, text }) + "\n"); } catch {} };
+const recentTurns = (n = 30) => {
+  try {
+    return readFileSync(TRANSCRIPT_FILE, "utf8").trim().split("\n").filter(Boolean).slice(-n)
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  } catch { return []; }
+};
+
 // --- websocket bridge ---
 const wss = new WebSocketServer({ server: httpServer });
 
 wss.on("connection", (ws) => {
-  let sessionId = null; // resume across turns => continuous conversation
+  let sessionId = lastSession; // resume the last conversation across HUD refreshes
   let busy = false;
   const send = (obj) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(obj));
   const sendAudio = (buf) => ws.readyState === ws.OPEN && ws.send(buf, { binary: true });
 
   send({ type: "ready", hub: HUB });
+  send({ type: "history", items: recentTurns(30) }); // replay so the feed isn't blank on reload
   warmVoice().then(() => send({ type: "voice-ready" })).catch(() => {});
 
   ws.on("message", async (data, isBinary) => {
@@ -86,6 +105,7 @@ wss.on("connection", (ws) => {
   async function runTurn(prompt) {
     if (busy) return send({ type: "busy" });
     busy = true;
+    appendTurn("you", prompt);
     send({ type: "thinking" });
     let finalText = "";
 
@@ -116,6 +136,8 @@ wss.on("connection", (ws) => {
         }
       }
       finalText = finalText.trim();
+      appendTurn("jarvis", finalText);
+      saveSession(sessionId);
       send({ type: "result", text: finalText });
 
       // speak it — local Kokoro, streamed per sentence
@@ -125,7 +147,10 @@ wss.on("connection", (ws) => {
         send({ type: "speak-end" });
       }
     } catch (err) {
-      send({ type: "error", text: String(err?.message || err) });
+      const m = String(err?.message || err);
+      // a stale/invalid resumed session: drop it so the next turn starts clean
+      if (sessionId && /session|resume|not\s*found|no such/i.test(m)) { clearSession(); sessionId = null; }
+      send({ type: "error", text: m });
     } finally {
       busy = false;
     }
