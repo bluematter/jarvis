@@ -100,7 +100,41 @@ wss.on("connection", (ws) => {
     let msg;
     try { msg = JSON.parse(data.toString()); } catch { return; }
     if (msg.type === "prompt" && msg.text?.trim()) return runTurn(msg.text);
+    if (msg.type === "search" && msg.text?.trim()) return runSearch(msg.text);
   });
+
+  // read-only history search over claude-mem (separate from the conversation; no TTS, no writes)
+  let searching = false;
+  async function runSearch(q) {
+    if (searching) return;
+    searching = true;
+    send({ type: "search-start", q });
+    let out = "";
+    try {
+      const stream = query({
+        prompt: `Search Michael's work history using the claude-mem tools (try smart_search first, then timeline if useful). Query: "${q}". Return the most relevant hits as a tight list — each line: what it was · which project · roughly when. No preamble, no markdown headers. If nothing matches, say so plainly.`,
+        options: {
+          cwd: HUB,
+          model: MODEL,
+          permissionMode: "default",
+          canUseTool: searchPolicy,
+          settingSources: ["user", "project"],
+          includePartialMessages: true,
+        },
+      });
+      for await (const ev of stream) {
+        if (ev.type === "stream_event") {
+          const d = ev.event?.delta;
+          if (d?.type === "text_delta" && d.text) { out += d.text; send({ type: "search-delta", text: d.text }); }
+        } else if (ev.type === "result") out = ev.result || out;
+      }
+      send({ type: "search-result", text: out.trim() });
+    } catch (err) {
+      send({ type: "search-error", text: String(err?.message || err) });
+    } finally {
+      searching = false;
+    }
+  }
 
   async function runTurn(prompt) {
     if (busy) return send({ type: "busy" });
@@ -162,6 +196,12 @@ function bufToFloat32(buf) {
   const out = new Float32Array(n);
   for (let i = 0; i < n; i++) out[i] = buf.readFloatLE(i * 4);
   return out;
+}
+
+// history search may only read claude-mem (+ basic read tools) — never write or run shell
+function searchPolicy(name, input) {
+  if (name.includes("claude-mem") || ["Read", "Glob", "Grep"].includes(name)) return { behavior: "allow", updatedInput: input };
+  return { behavior: "deny", message: "history search is read-only (claude-mem only)" };
 }
 
 function summarizeInput(input) {

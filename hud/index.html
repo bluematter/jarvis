@@ -36,6 +36,16 @@
   /* cards */
   .cards { flex: 1; overflow-y: auto; padding: 0 16px 20px; display: flex; flex-direction: column; gap: 12px; }
   .cards::-webkit-scrollbar { width: 0; }
+  .search { margin: 0 16px 12px; padding: 9px 12px; background: #06121c; border: 1px solid #123247;
+    border-radius: 9px; color: #cfeefb; font-size: .85rem; outline: none; }
+  .search:focus { border-color: var(--c); }
+  .results { flex: 1; overflow-y: auto; padding: 0 16px 20px; white-space: pre-wrap; font-size: .84rem;
+    color: #bfe3f2; line-height: 1.5; }
+  .results::-webkit-scrollbar { width: 0; }
+  .results .rq { color: var(--c); font-size: .7rem; letter-spacing: .12em; text-transform: uppercase;
+    margin-bottom: 10px; display: flex; justify-content: space-between; align-items: baseline; }
+  .results .rq a { color: #4d6f7e; cursor: pointer; text-transform: none; letter-spacing: 0; }
+  .results .rq a:hover { color: var(--c); }
   .card { background: #06121c; border: 1px solid #0e2738; border-radius: 12px; padding: 13px 15px; }
   .card.muted { opacity: .55; }
   .card .ct { display: flex; align-items: center; gap: 7px; font-size: .72rem; letter-spacing: .18em;
@@ -76,7 +86,9 @@
 <div id="app">
   <div class="rail left">
     <h2>Dashboard <span class="stamp" id="stamp"></span></h2>
+    <input id="q" class="search" placeholder="Search my history…  ↵" autocomplete="off" />
     <div class="cards" id="cards"></div>
+    <div class="results" id="results" hidden></div>
   </div>
   <div class="stage">
     <canvas id="orb"></canvas>
@@ -94,7 +106,8 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const caption = $("caption"), stateEl = $("state"), feed = $("feed"), talk = $("talk"), conn = $("conn");
-const hint = $("hint"), meter = $("meter"), mlevel = $("mlevel");
+const hint = $("hint"), meter = $("meter"), mlevel = $("mlevel"), cards = $("cards"), q = $("q"), results = $("results");
+let searchAcc = "", rbodyEl = null;
 
 // ---------- websocket to the bridge ----------
 let ws, wsReady = false;
@@ -120,7 +133,24 @@ function handle(m) {
   else if (m.type === "idle") { mode = "idle"; setState("idle", caption.textContent); }
   else if (m.type === "busy") setState("thinking", "One thing at a time…");
   else if (m.type === "error") { setState("idle", "Error: " + m.text); mode = "idle"; }
+  else if (m.type === "search-delta") { searchAcc += m.text; if (rbodyEl) { rbodyEl.textContent = searchAcc; rbodyEl.parentElement.scrollTop = rbodyEl.parentElement.scrollHeight; } }
+  else if (m.type === "search-result") { if (rbodyEl) rbodyEl.textContent = (m.text || searchAcc || "No matches found."); }
+  else if (m.type === "search-error") { if (rbodyEl) rbodyEl.textContent = "Search error: " + m.text; }
 }
+function doSearch(text) {
+  if (!wsReady) return;
+  searchAcc = "";
+  results.hidden = false; cards.hidden = true;
+  results.innerHTML = `<div class="rq"><span>“${escape(text)}”</span><a id="rclose">✕ back</a></div><div id="rbody">Searching your history…</div>`;
+  rbodyEl = document.getElementById("rbody");
+  document.getElementById("rclose").onclick = closeSearch;
+  ws.send(JSON.stringify({ type: "search", text }));
+}
+function closeSearch() { results.hidden = true; cards.hidden = false; rbodyEl = null; q.value = ""; }
+q.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && q.value.trim()) { e.preventDefault(); doSearch(q.value.trim()); }
+  else if (e.key === "Escape") { e.preventDefault(); closeSearch(); q.blur(); }
+});
 function addTool(name, input) {
   const d = document.createElement("div");
   d.className = "tool";
@@ -247,8 +277,9 @@ function readPeak(an) {
 talk.onmousedown = startListen; talk.onmouseup = stopListen; talk.onmouseleave = () => listening && stopListen();
 talk.ontouchstart = (e) => { e.preventDefault(); startListen(); };
 talk.ontouchend = (e) => { e.preventDefault(); stopListen(); };
-addEventListener("keydown", (e) => { if (e.code === "Space" && !e.repeat) { e.preventDefault(); startListen(); } });
-addEventListener("keyup", (e) => { if (e.code === "Space") { e.preventDefault(); stopListen(); } });
+const typing = (e) => e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA";
+addEventListener("keydown", (e) => { if (e.code === "Space" && !e.repeat && !typing(e)) { e.preventDefault(); startListen(); } });
+addEventListener("keyup", (e) => { if (e.code === "Space" && !typing(e)) { e.preventDefault(); stopListen(); } });
 
 // ---------- the orb ----------
 const cv = $("orb"), g = cv.getContext("2d");
