@@ -34,6 +34,7 @@ const MODEL = env.JARVIS_MODEL || undefined;
 const PERMISSION_MODE = env.JARVIS_PERMISSION_MODE || "bypassPermissions";
 // spoken ack when a turn reaches for tools, so a data-gathering turn isn't dead silence
 const FILLERS = ["Sure, scanning the data now.", "One sec, pulling that up.", "On it — checking the numbers.", "Let me look that up.", "Give me a moment, digging in."];
+const KEEPALIVE = ["Still on it, sir.", "Almost there.", "Bear with me.", "Still digging.", "One more moment."]; // spoken if a tool turn goes quiet too long
 
 // --- static HUD ---
 const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" };
@@ -460,7 +461,7 @@ wss.on("connection", (ws) => {
   }
 
   function enqueueTTS(T, s) { // sequential synth: preserves order, pipelines with generation
-    const t = s.trim(); if (!t) return; T.queued++;
+    const t = s.trim(); if (!t) return; T.queued++; T.tLastChunk = Date.now(); // reset the keep-alive silence timer
     T.ttsChain = T.ttsChain
       .then(() => { const st = Date.now(); return synth(t).then((b) => { T.synthMs.push(Date.now() - st); return b; }); })
       .then((b) => {
@@ -484,7 +485,7 @@ wss.on("connection", (ws) => {
     if (final && T.pending.trim()) { enqueueTTS(T, T.pending); T.pending = ""; }
   }
   async function finalizeTurn(T) {
-    if (T.done) return; T.done = true;
+    if (T.done) return; T.done = true; clearInterval(T.keepAlive);
     T.finalText = (T.finalText || "").trim();
     if (!T.queued && !T.pending && T.finalText) T.pending = T.finalText; // no deltas → speak the result
     pullTTS(T, true);
@@ -509,9 +510,17 @@ wss.on("connection", (ws) => {
     const T = {
       pending: "", ttsChain: Promise.resolve(), startedSpeaking: false, queued: 0, finalText: "", done: false, resolve: null,
       cold, stt: lastSttMs, t0: 0, tFirstDelta: 0, tFirstAudio: 0, tResult: 0, tools: 0, synthMs: [], chunkAt: [], label: youLabel,
+      tLastChunk: 0, keepAlive: null,
     };
     lastSttMs = 0;
     currentTurn = T;
+    // keep the voice alive on long tool turns: if we've spoken a filler but then gone quiet (still working,
+    // answer not yet streaming), say a brief reassurance instead of leaving dead air.
+    T.keepAlive = setInterval(() => {
+      if (T.done) { clearInterval(T.keepAlive); return; }
+      if (T.startedSpeaking && !T.tFirstDelta && Date.now() - (T.tLastChunk || T.t0) > 5000)
+        enqueueTTS(T, KEEPALIVE[(Math.random() * KEEPALIVE.length) | 0]);
+    }, 2000);
     const wait = new Promise((res) => { T.resolve = res; });
     T.t0 = Date.now(); // submit moment — all timings are relative to this
     try { convo.input.push(prompt); }

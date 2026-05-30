@@ -443,7 +443,10 @@ function enqueueAudio(arrayBuffer) {
   if (!aplaying) playNext();
 }
 async function playNext() {
-  if (!aqueue.length) { aplaying = false; clog(`queue empty · speakEnded=${speakEnded}`); if (speakEnded) finishSpeaking(); return; }
+  if (!aqueue.length) { aplaying = false; clog(`queue empty · speakEnded=${speakEnded}`);
+    if (speakEnded) finishSpeaking();
+    else if (mode === "speaking") { mode = "thinking"; setState("thinking", caption.textContent); } // mid-turn gap (tool work) → show working, not a silent 'speaking' orb
+    return; }
   aplaying = true; mode = "speaking";
   if (actx.state === "suspended") { clog("ctx suspended → resume"); try { await actx.resume(); } catch (e) { clog("resume FAIL " + e); } }
   let buf;
