@@ -274,18 +274,19 @@ function connect() {
 }
 let streamed = "", wakeArmTimer = null;
 function handle(m) {
-  if (m.type === "wake-armed") { // bare "Hey Jarvis" heard → keep listening for the command
-    mode = "idle"; setState("listening", "Listening…");
+  if (m.type === "wake") { wakeFlare(); return; } // "Hey Jarvis <command>" in one breath — acknowledge, the turn follows
+  if (m.type === "wake-armed") { // bare "Hey Jarvis" — flare, then stay visibly engaged for the command
+    wakeFlare(); armedListening = true; mode = "idle"; setState("listening", "Listening…");
     clearTimeout(wakeArmTimer);
-    wakeArmTimer = setTimeout(() => { if (stateEl.textContent === "listening" && mode === "idle") setState("idle", "…"); }, 4500);
+    wakeArmTimer = setTimeout(() => { armedListening = false; if (stateEl.textContent === "listening" && mode === "idle") setState("idle", "…"); }, 4500);
     return;
   }
   if (m.type === "voice-ready") { tbVoice.classList.add("on"); setState("idle", "Online. Say the word."); }
   else if (m.type === "history") renderHistory(m.items);
   else if (m.type === "brief-due") briefDue = m.due;
-  else if (m.type === "transcribing") { setState("transcribing", "…"); mode = "thinking"; }
+  else if (m.type === "transcribing") { armedListening = false; setState("transcribing", "…"); mode = "thinking"; }
   else if (m.type === "transcript") { if (m.text) addMe(m.text); }
-  else if (m.type === "thinking") { streamed = ""; setState("thinking", "…"); mode = "thinking"; }
+  else if (m.type === "thinking") { armedListening = false; streamed = ""; setState("thinking", "…"); mode = "thinking"; }
   else if (m.type === "delta") { streamed += m.text; caption.textContent = streamed; caption.scrollTop = caption.scrollHeight; }
   else if (m.type === "tool") addTool(m.name, m.input);
   else if (m.type === "result") { const t = m.text || streamed; caption.textContent = t || "Done."; caption.scrollTop = 0; }
@@ -345,6 +346,7 @@ function sendPrompt(text) { if (!wsReady || !text.trim()) return; addMe(text); w
 
 // ---------- audio engine: mic capture (STT in) + playback (TTS out) ----------
 let mode = "idle", level = 0, listening = false;
+let armedListening = false, wakeFlash = 0; // armedListening: just heard "Hey Jarvis", waiting for the command · wakeFlash: 1→0 flare decay
 let actx = null, micAnalyser = null, playAnalyser = null;
 let capturing = false, capBuf = [];
 const tmp = new Uint8Array(256);
@@ -456,6 +458,28 @@ function armedHint() {
     ? 'mic armed · say <b>“Hey&nbsp;Jarvis…”</b> &nbsp;·&nbsp; or hold <kbd>Space</kbd> to talk'
     : 'mic armed · hold <kbd>Space</kbd> or the mic button to talk';
 }
+// A soft rising "power-up" shimmer — what JARVIS would do, not a notification ding. Synthesized live:
+// two detuned partials sweeping up an octave through an opening low-pass + a faint top sparkle.
+function playWakeChime() {
+  if (!actx) return;
+  if (actx.state === "suspended") { try { actx.resume(); } catch {} }
+  const now = actx.currentTime;
+  const lp = actx.createBiquadFilter(); lp.type = "lowpass";
+  lp.frequency.setValueAtTime(500, now); lp.frequency.exponentialRampToValueAtTime(4200, now + 0.2);
+  lp.connect(actx.destination);
+  const voice = (freq, type, peak, end) => {
+    const o = actx.createOscillator(), gg = actx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, now); o.frequency.exponentialRampToValueAtTime(freq * 2, now + 0.22);
+    gg.gain.setValueAtTime(0.0001, now);
+    gg.gain.exponentialRampToValueAtTime(peak, now + 0.05);   // quick soft attack
+    gg.gain.exponentialRampToValueAtTime(0.0001, now + end);  // gentle release
+    o.connect(gg); gg.connect(lp); o.start(now); o.stop(now + end + 0.05);
+  };
+  voice(330, "sine", 0.09, 0.5);      // root, rising
+  voice(495, "triangle", 0.045, 0.45); // a fifth above, quieter
+  voice(990, "sine", 0.02, 0.3);       // faint top sparkle
+}
+function wakeFlare() { wakeFlash = 1; playWakeChime(); } // visual pop + sound the instant it hears its name
 function readPeak(an) {
   an.getByteTimeDomainData(tmp);
   let p = 0; for (const v of tmp) p = Math.max(p, Math.abs(v - 128));
@@ -561,23 +585,32 @@ function size() { const d = devicePixelRatio || 1; cv.width = cv.clientWidth * d
 addEventListener("resize", size); size();
 const ORB_RGB = { idle:[56,150,190], listening:[56,225,255], thinking:[180,120,255], speaking:[120,255,200] };
 const parts = Array.from({ length: 22 }, (_, i) => ({ a:(i/22)*Math.PI*2, r:0.9+Math.random()*0.7, s:0.2+Math.random()*0.5, z:Math.random() }));
-let t = 0;
+let t = 0, dimCur = 1;
 (function draw() {
   t += 0.016; const w = cv.width, h = cv.height, cx = w/2, cy = h/2;
   g.clearRect(0, 0, w, h);
   const base = Math.min(w, h) * 0.20;
-  const rgb = ORB_RGB[mode] || ORB_RGB.idle;
+  // standby: when armed and resting (waiting for the wake word) the orb breathes low and calm;
+  // it flares to full the instant "Hey Jarvis" lands.
+  const engaged = mode === "listening" || armedListening;
+  const resting = WAKE_MODE && mode === "idle" && !armedListening;
+  dimCur += ((resting ? 0.4 : 1) - dimCur) * 0.07;
+  wakeFlash *= 0.93;
+  g.globalAlpha = Math.max(dimCur, wakeFlash); // flare overrides the standby dim
+  const vmode = armedListening ? "listening" : mode;
+  const rgb = ORB_RGB[vmode] || ORB_RGB.idle;
   const mix = (a) => `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a})`;
   // real audio amplitude (mic when listening, Jarvis voice when speaking) — calmed so the
   // orb breathes instead of ballooning past the canvas
-  let target = mode === "listening" && micAnalyser ? readPeak(micAnalyser)
+  let target = engaged && micAnalyser ? readPeak(micAnalyser)
              : mode === "speaking" && playAnalyser ? readPeak(playAnalyser) : 0;
   level = level * 0.8 + target * 0.2;
-  const react = mode === "listening" ? level * base * 0.55
+  const react = engaged ? level * base * 0.55
               : mode === "speaking" ? (0.05 + level * 0.5) * base
               : mode === "thinking" ? (Math.sin(t*6)*0.5+0.5) * base * 0.28
+              : resting ? Math.sin(t*0.9) * base * 0.07   // slow, deep standby breath
               : Math.sin(t*1.4) * base * 0.05;
-  const R = base + react;
+  const R = base + react + wakeFlash * base * 0.22;        // flare pops the radius
   // bloom — clamp the outer radius so it always fades to 0 INSIDE the canvas (no square edge)
   const bloomR = Math.min(R * 2.1, Math.min(w, h) * 0.49);
   const bloom = g.createRadialGradient(cx, cy, R * 0.2, cx, cy, bloomR);
@@ -625,6 +658,13 @@ let t = 0;
   const hl = g.createRadialGradient(cx-R*0.34,cy-R*0.4,0,cx-R*0.34,cy-R*0.4,R*0.5);
   hl.addColorStop(0,"rgba(255,255,255,0.5)"); hl.addColorStop(1,"rgba(255,255,255,0)");
   g.beginPath(); g.arc(cx,cy,R,0,Math.PI*2); g.fillStyle=hl; g.fill();
+  // wake flare: a ring that ripples outward and fades as it answers to its name
+  if (wakeFlash > 0.02) {
+    const ringR = R + base*(0.5 + (1-wakeFlash)*1.7);
+    g.beginPath(); g.arc(cx,cy,ringR,0,Math.PI*2);
+    g.strokeStyle = `rgba(56,225,255,${wakeFlash*0.7})`; g.lineWidth = Math.max(1, w*0.005*wakeFlash); g.stroke();
+  }
+  g.globalAlpha = 1;
   requestAnimationFrame(draw);
 })();
 

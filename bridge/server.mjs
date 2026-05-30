@@ -284,6 +284,7 @@ wss.on("connection", (ws) => {
           if (command) { // "Hey Jarvis, what's revenue" — wake + command in one breath
             awaitingCommand = false;
             console.log(`[wake] RUN "${command}"`);
+            send({ type: "wake" }); // flare + shimmer the moment it hears its name
             send({ type: "transcript", text: command });
             return runTurn(command);
           }
