@@ -220,6 +220,7 @@ function notify(title, body) {
 wss.on("connection", (ws) => {
   let sessionId = lastSession; // resume the last conversation across HUD refreshes
   let busy = false;
+  let lastSttMs = 0; // STT time of the most recent voice utterance, folded into the turn's timing line
   const send = (obj) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(obj));
   const sendAudio = (buf) => ws.readyState === ws.OPEN && ws.send(buf, { binary: true });
 
@@ -235,11 +236,13 @@ wss.on("connection", (ws) => {
       if (busy) return send({ type: "busy" });
       send({ type: "transcribing" });
       let text = "";
+      const stStt = Date.now();
       try {
         text = await transcribe(bufToFloat32(data));
       } catch (err) {
         return send({ type: "error", text: "STT: " + (err?.message || err) });
       }
+      lastSttMs = Date.now() - stStt;
       send({ type: "transcript", text });
       if (!text) return send({ type: "idle" });
       return runTurn(text);
@@ -334,21 +337,27 @@ wss.on("connection", (ws) => {
     if (!T) return;
     if (ev.type === "stream_event") {
       const d = ev.event?.delta;
-      if (d?.type === "text_delta" && d.text) { send({ type: "delta", text: d.text }); T.pending += d.text; pullTTS(T, false); }
+      if (d?.type === "text_delta" && d.text) {
+        if (!T.tFirstDelta) T.tFirstDelta = Date.now() - T.t0; // time-to-first-token = "thinking"
+        send({ type: "delta", text: d.text }); T.pending += d.text; pullTTS(T, false);
+      }
     } else if (ev.type === "assistant") {
-      for (const b of ev.message?.content || []) if (b.type === "tool_use") send({ type: "tool", name: b.name, input: summarizeInput(b.input) });
+      for (const b of ev.message?.content || []) if (b.type === "tool_use") { T.tools++; send({ type: "tool", name: b.name, input: summarizeInput(b.input) }); }
     } else if (ev.type === "result") {
-      T.finalText = ev.result || T.finalText; finalizeTurn(T);
+      T.tResult = Date.now() - T.t0; T.finalText = ev.result || T.finalText; finalizeTurn(T);
     }
   }
 
   function enqueueTTS(T, s) { // sequential synth: preserves order, pipelines with generation
     const t = s.trim(); if (!t) return; T.queued++;
-    T.ttsChain = T.ttsChain.then(() => synth(t)).then((b) => {
-      if (!b) return;
-      if (!T.startedSpeaking) { T.startedSpeaking = true; send({ type: "speak-start" }); }
-      sendAudio(b);
-    }).catch(() => {});
+    T.ttsChain = T.ttsChain
+      .then(() => { const st = Date.now(); return synth(t).then((b) => { T.synthMs.push(Date.now() - st); return b; }); })
+      .then((b) => {
+        if (!b) return;
+        if (!T.startedSpeaking) { T.startedSpeaking = true; T.tFirstAudio = Date.now() - T.t0; send({ type: "speak-start" }); }
+        T.chunkAt.push(Date.now() - T.t0);
+        sendAudio(b);
+      }).catch(() => {});
   }
   function pullTTS(T, final) { // pull complete sentences (terminator + following space) out of T.pending
     let m;
@@ -365,6 +374,7 @@ wss.on("connection", (ws) => {
     send({ type: "result", text: T.finalText });
     await T.ttsChain; // every sentence synthesized + sent, in order
     send(T.startedSpeaking ? { type: "speak-end" } : { type: "idle" });
+    timingLog(T);
     busy = false;
     if (currentTurn === T) currentTurn = null;
     if (T.resolve) T.resolve();
@@ -375,10 +385,16 @@ wss.on("connection", (ws) => {
     busy = true;
     appendTurn("you", youLabel);
     send({ type: "thinking" });
-    if (!convo || !convo.alive) startConvo(); // (re)spawn the warm session on first turn / after death
-    const T = { pending: "", ttsChain: Promise.resolve(), startedSpeaking: false, queued: 0, finalText: "", done: false, resolve: null };
+    let cold = false;
+    if (!convo || !convo.alive) { startConvo(); cold = true; } // (re)spawn the warm session on first turn / after death
+    const T = {
+      pending: "", ttsChain: Promise.resolve(), startedSpeaking: false, queued: 0, finalText: "", done: false, resolve: null,
+      cold, stt: lastSttMs, t0: 0, tFirstDelta: 0, tFirstAudio: 0, tResult: 0, tools: 0, synthMs: [], chunkAt: [], label: youLabel,
+    };
+    lastSttMs = 0;
     currentTurn = T;
     const wait = new Promise((res) => { T.resolve = res; });
+    T.t0 = Date.now(); // submit moment — all timings are relative to this
     try { convo.input.push(prompt); }
     catch (err) { send({ type: "error", text: String(err?.message || err) }); busy = false; currentTurn = null; return; }
     await wait;
@@ -408,6 +424,26 @@ function summarizeInput(input) {
   if (typeof input === "string") return input.slice(0, 80);
   const s = input.command || input.query || input.prompt || input.path || input.file_path || "";
   return String(s).slice(0, 80);
+}
+
+// one tidy timing line per turn → ~/Library/Logs/jarvis-bridge.log
+//   watch live:  tail -f ~/Library/Logs/jarvis-bridge.log | grep '\[turn\]'
+// stt=STT ms · think=time-to-first-word (LLM) · 1st-audio=when Jarvis starts talking ·
+// gen=full answer generated · tts=[per-sentence synth ms] · cadence=[audio-chunk send times] · all ms from submit
+function timingLog(T) {
+  const r = (n) => Math.round(n || 0);
+  const parts = [
+    `[turn] ${T.cold ? "cold" : "warm"}`,
+    `stt=${T.stt ? r(T.stt) : "-"}`,
+    `think=${r(T.tFirstDelta)}`,
+    `1st-audio=${r(T.tFirstAudio)}`,
+    `gen=${r(T.tResult)}`,
+    `tts=${T.synthMs.length}[${T.synthMs.map(r).join("/")}]`,
+    `total=${r(Date.now() - T.t0)}`,
+    `tools=${T.tools}`,
+  ];
+  if (T.chunkAt.length > 1) parts.push(`cadence=[${T.chunkAt.map(r).join(",")}]`);
+  console.log(parts.join("  "));
 }
 
 httpServer.listen(PORT, () => {
