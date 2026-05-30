@@ -50,7 +50,8 @@ const readState = () => {
       if (f.endsWith(".card.json")) { const c = readJSON(join(HUB, "metrics", f), null); if (c) cards.push(c); }
     }
   } catch {}
-  return { fleet, cards, metricsUpdatedAt: metrics?.updatedAt || null };
+  const cfg = readJSON(join(ROOT, "config.json"), {}); // fork-friendly config (re-read live, no restart)
+  return { fleet, cards, metricsUpdatedAt: metrics?.updatedAt || null, goalMRR: cfg.revenueGoalMRR || 10000, goalByCard: cfg.revenueGoalByCard || {} };
 };
 
 const httpServer = createServer(async (req, res) => {

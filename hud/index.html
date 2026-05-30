@@ -67,6 +67,18 @@
   .tile .dl { font-family: var(--mono); font-size: .7rem; font-weight: 600; margin-top: 3px; }
   .dl.up { color: #2ecc71; } .dl.down { color: #ff6b6b; } .dl.flat { color: #5a7888; }
   .card .note { font-size: .74rem; color: #5d8294; margin-top: 9px; line-height: 1.4; }
+  /* revenue-vs-goal progress bar */
+  .card .goalbar { margin-top: 12px; }
+  .card .gtrack { position: relative; height: 7px; border-radius: 4px; border: 1px solid rgba(56,225,255,.14); overflow: hidden;
+    background: rgba(56,225,255,.05); background-image: repeating-linear-gradient(90deg, transparent 0 11px, rgba(56,225,255,.09) 11px 12px); }
+  .card .gfill { height: 100%; border-radius: 3px; position: relative; transition: width .9s cubic-bezier(.2,.8,.2,1);
+    background: linear-gradient(90deg, #2aa7ff, #7fefff); box-shadow: 0 0 10px rgba(56,225,255,.55), inset 0 0 6px rgba(255,255,255,.25); }
+  .card .gfill::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,.5), transparent); animation: gscan 2.8s ease-in-out infinite; }
+  .card .gfill.gdone { background: linear-gradient(90deg, #4dffb0, #b6ffe6); box-shadow: 0 0 12px rgba(120,255,200,.6); }
+  .card .gmeta { display: flex; justify-content: space-between; margin-top: 5px; font-family: var(--mono); font-size: .58rem; letter-spacing: .04em; color: #6fa8c0; }
+  .card .gmeta i { color: #4a6675; font-style: normal; }
+  @keyframes gscan { 0% { transform: translateX(-100%); } 55%, 100% { transform: translateX(300%); } }
   .fleet-rows { display: flex; flex-direction: column; gap: 7px; margin-top: 13px; }
   .frow { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: .78rem; color: #9fc0cf; }
   .frow > span:first-child { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -753,6 +765,19 @@ function ago(iso) {
   return Math.round(s / 86400) + "d ago";
 }
 const arrow = (d) => (d === "up" ? " ↑" : d === "down" ? " ↓" : "");
+// futuristic revenue-vs-goal progress bar (goal from config.json, served in /state)
+function goalBar(c, st) {
+  const t = c.tiles || [];
+  const tile = t.find((x) => /mrr/i.test(x.label)) || t.find((x) => /revenue/i.test(x.label));
+  if (!tile) return "";
+  const val = Number(String(tile.value).replace(/[^0-9.]/g, "")) || 0;
+  const goal = (st.goalByCard && st.goalByCard[c.source]) || st.goalMRR || 10000;
+  if (!val || !goal) return "";
+  const pct = Math.max(2, Math.min(100, (val / goal) * 100)), done = pct >= 100;
+  const goalLbl = goal >= 1000 ? "$" + goal / 1000 + "k" : "$" + goal;
+  return `<div class="goalbar"><div class="gtrack"><div class="gfill${done ? " gdone" : ""}" style="width:${pct.toFixed(1)}%"></div></div>` +
+    `<div class="gmeta"><span>${escape(String(tile.value))}</span><span>${Math.round(pct)}% <i>→ ${goalLbl}</i></span></div></div>`;
+}
 async function refreshState() {
   let st; try { st = await (await fetch("/state", { cache: "no-store" })).json(); } catch { return; }
   const out = [];
@@ -771,7 +796,7 @@ async function refreshState() {
     const tiles = (c.tiles || []).map((t) =>
       `<div class="tile"><div class="lbl">${escape(t.label)}</div><div class="val">${escape(t.value ?? "—")}</div>${t.delta ? `<div class="dl ${t.dir || "flat"}">${escape(t.delta)}${arrow(t.dir)}</div>` : ""}</div>`).join("");
     out.push(`<div class="card ${ok ? "" : "muted"}"><div class="ct"><span class="sdot ${c.status === "error" ? "error" : ok ? "ok" : ""}"></span>${escape(c.title || c.source)}</div>
-      ${tiles ? `<div class="tiles">${tiles}</div>` : ""}${c.note ? `<div class="note">${escape(c.note)}</div>` : ""}</div>`);
+      ${tiles ? `<div class="tiles">${tiles}</div>` : ""}${goalBar(c, st)}${c.note ? `<div class="note">${escape(c.note)}</div>` : ""}</div>`);
   }
   if (!out.length) out.push(`<div class="card muted"><div class="ct"><span class="sdot"></span>Dashboard</div><div class="note">Run <b>pnpm scan</b> and <b>pnpm metrics</b> to populate.</div></div>`);
   cardsEl.innerHTML = out.join("");

@@ -1,0 +1,10 @@
+{
+  "//": "Jarvis config — safe to edit AND commit (no secrets here; secrets stay in .env). Forkers: tweak these.",
+  "revenueGoalMRR": 10000,
+  "revenueGoalByCard": {
+    "//": "optional per-card overrides, keyed by card source, e.g. \"revenuecat-gluely\": 20000",
+    "revenuecat-gluely": 10000,
+    "revenuecat-basedhealth": 10000,
+    "whop": 10000
+  }
+}
