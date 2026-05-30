@@ -67,6 +67,8 @@
   .tile .dl { font-family: var(--mono); font-size: .7rem; font-weight: 600; margin-top: 3px; }
   .dl.up { color: #2ecc71; } .dl.down { color: #ff6b6b; } .dl.flat { color: #5a7888; }
   .card .note { font-size: .74rem; color: #5d8294; margin-top: 9px; line-height: 1.4; }
+  .card.total { border-color: rgba(120,231,255,.35); background: linear-gradient(180deg, rgba(56,225,255,.07), rgba(7,16,24,.55)); box-shadow: 0 0 22px rgba(56,225,255,.08); }
+  .card.total .ct { color: var(--c); }
   /* revenue-vs-goal progress bar */
   .card .goalbar { margin-top: 12px; }
   .card .gtrack { position: relative; height: 7px; border-radius: 4px; border: 1px solid rgba(56,225,255,.14); overflow: hidden;
@@ -841,6 +843,26 @@ function ago(iso) {
   return Math.round(s / 86400) + "d ago";
 }
 const arrow = (d) => (d === "up" ? " ↑" : d === "down" ? " ↓" : "");
+const num = (v) => Number(String(v ?? "").replace(/[^0-9.]/g, "")) || 0;
+// "Portfolio · all products" summary card — sums each product's headline revenue vs the combined goal
+function portfolioCard(cards, st) {
+  let rev = 0, goal = 0, n = 0;
+  for (const c of cards) {
+    if (!c || c.status !== "ok" || c.source === "wallet") continue; // wallet is an asset, not project revenue
+    const t = c.tiles || [];
+    const tile = t.find((x) => /mrr/i.test(x.label)) || t.find((x) => /revenue/i.test(x.label));
+    const v = tile ? num(tile.value) : 0; if (!v) continue;
+    rev += v; n++; goal += (st.goalByCard && st.goalByCard[c.source]) || st.goalMRR || 10000;
+  }
+  if (n < 2) return "";
+  const pct = goal ? Math.max(2, Math.min(100, (rev / goal) * 100)) : 0;
+  const money = "$" + Math.round(rev).toLocaleString(), goalLbl = goal >= 1000 ? "$" + Math.round(goal / 1000) + "k" : "$" + goal;
+  return `<div class="card total"><div class="ct"><span class="sdot ok"></span>Portfolio · all products</div>
+    <div class="tiles"><div class="tile"><div class="lbl">Run rate / mo</div><div class="val">${money}</div></div>
+      <div class="tile"><div class="lbl">Products</div><div class="val">${n}</div></div></div>
+    <div class="goalbar"><div class="gtrack"><div class="gfill${pct >= 100 ? " gdone" : ""}" style="width:${pct.toFixed(1)}%"></div></div>
+      <div class="gmeta"><span>${money}</span><span>${Math.round(pct)}% <i>→ ${goalLbl} combined</i></span></div></div></div>`;
+}
 // futuristic revenue-vs-goal progress bar (goal from config.json, served in /state)
 function goalBar(c, st) {
   const t = c.tiles || [];
@@ -875,6 +897,7 @@ async function refreshState() {
     out.push(`<div class="card ${ok ? "" : "muted"}"><div class="ct"><span class="sdot ${c.status === "error" ? "error" : ok ? "ok" : ""}"></span>${escape(c.title || c.source)}</div>
       ${tiles ? `<div class="tiles">${tiles}</div>` : ""}${goalBar(c, st)}${c.note ? `<div class="note">${escape(c.note)}</div>` : ""}</div>`);
   }
+  const total = portfolioCard(st.cards || [], st); if (total) out.push(total); // capstone: all products summed
   if (!out.length) out.push(`<div class="card muted"><div class="ct"><span class="sdot"></span>Dashboard</div><div class="note">Run <b>pnpm scan</b> and <b>pnpm metrics</b> to populate.</div></div>`);
   const html = out.join("");
   if (html !== lastCardsHtml) { cardsEl.innerHTML = html; lastCardsHtml = html; } // only repaint on change (was restarting animations / flickering)
