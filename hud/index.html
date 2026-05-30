@@ -393,14 +393,20 @@ function mergeDownsample(chunks, inRate, outRate) {
 
 // ---------- playback queue (TTS audio streamed from the bridge) ----------
 let aqueue = [], aplaying = false, curSrc = null, speakEnded = false;
-async function enqueueAudio(arrayBuffer) {
+// queue RAW buffers in arrival order (WS order is correct); decode one-at-a-time at play
+// time. Decoding on arrival scrambled order — short sentences decoded first and played early.
+function enqueueAudio(arrayBuffer) {
   if (!actx) return;
-  try { aqueue.push(await actx.decodeAudioData(arrayBuffer.slice(0))); if (!aplaying) playNext(); } catch {}
+  aqueue.push(arrayBuffer);
+  if (!aplaying) playNext();
 }
-function playNext() {
+async function playNext() {
   if (!aqueue.length) { aplaying = false; if (speakEnded) finishSpeaking(); return; }
   aplaying = true; mode = "speaking";
-  curSrc = actx.createBufferSource(); curSrc.buffer = aqueue.shift();
+  let buf;
+  try { buf = await actx.decodeAudioData(aqueue.shift().slice(0)); } catch { return playNext(); }
+  if (!aplaying) return; // stopped mid-decode (barge-in)
+  curSrc = actx.createBufferSource(); curSrc.buffer = buf;
   curSrc.connect(playAnalyser); playAnalyser.connect(actx.destination);
   curSrc.onended = () => { curSrc = null; playNext(); };
   curSrc.start();
