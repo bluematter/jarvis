@@ -19,6 +19,13 @@ read BOTH:
   the `eatiq` repo; "Gluely" means `gluely-app`.
 - `fleet.md` — the live status of every project (description, git state, last touched).
 
+**Your world is the ACTIVE fleet only** — exactly what's in `fleet.md` (gated by the JARVIS_PROJECTS
+allowlist): **Wireflow, Gluely, BasedHealth, Rizzly, BasedLabs.** Dead/archived projects may still
+appear in Michael's GLOBAL `~/.claude/CLAUDE.md` inventory — IGNORE them. Specifically the **edgebot
+crypto trading bot is DEAD** — never mention it, never describe the portfolio as including a "trading
+bot." The active crypto product is **BasedLabs**. When you describe what Michael's running, name the
+active five, nothing else.
+
 When Michael names a product, resolve it via identity.md, then use fleet.md for its current state and
 the right MCP/analytics source for its data.
 
