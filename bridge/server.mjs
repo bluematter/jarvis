@@ -102,9 +102,22 @@ const BRIEF_PROMPT = `Give me a short SPOKEN morning briefing. Read metrics/*.ca
 // keep the dashboard fresh while the bridge is up: re-scan fleet + re-pull connectors
 const REFRESH_MS = Number(process.env.JARVIS_REFRESH_MS || 15 * 60 * 1000);
 function refreshData() {
+  ensureMemWorker(); // piggyback the keep-alive on the refresh cadence
   for (const script of ["scripts/scan-fleet.mjs", "scripts/run-connectors.mjs"]) {
     try { spawn(process.execPath, [join(ROOT, script)], { cwd: ROOT, stdio: "ignore" }).on("error", () => {}); } catch {}
   }
+}
+
+// keep claude-mem's worker alive: its UserPromptSubmit hook fires every turn and waits up to +10s
+// (sleep 1 ×10) if the localhost worker is down. Re-spawning it (idempotent) prevents that p99 spike.
+function ensureMemWorker() {
+  try {
+    const base = join(process.env.HOME, ".claude/plugins/cache/thedotmack/claude-mem");
+    const vers = readdirSync(base).filter((d) => /^\d/.test(d)).sort().reverse();
+    if (!vers.length) return;
+    const s = join(base, vers[0], "scripts");
+    spawn(process.execPath, [join(s, "bun-runner.js"), join(s, "worker-service.cjs"), "start"], { stdio: "ignore" }).on("error", () => {});
+  } catch {}
 }
 
 // --- work-orders: Jarvis PROPOSES (writes hub/orders/<id>.json), Michael APPROVES by dispatching
@@ -213,6 +226,7 @@ wss.on("connection", (ws) => {
   send({ type: "ready", hub: HUB });
   send({ type: "history", items: recentTurns(30) }); // replay so the feed isn't blank on reload
   send({ type: "brief-due", due: briefDate() !== todayStr() }); // first open of the day → auto-briefing
+  ensureMemWorker(); // revive the claude-mem worker if it died (avoids the +10s hook stall)
   warmVoice().then(() => send({ type: "voice-ready" })).catch(() => {});
 
   ws.on("message", async (data, isBinary) => {
@@ -272,67 +286,108 @@ wss.on("connection", (ws) => {
     }
   }
 
-  // a spoken turn: streams the answer AND synthesizes each sentence the moment it's ready, so the
-  // first audio goes out while the rest of the reply is still being generated (much lower latency).
+  // --- persistent conversation session: ONE streaming-input query() per connection keeps the CLI +
+  // MCP servers WARM across turns (no per-turn re-init). Each pushed user message is one turn. ---
+  function makeInput() {
+    const queue = []; let waiting = null; let closed = false;
+    return {
+      iterable: { [Symbol.asyncIterator]() { return { next() {
+        if (queue.length) return Promise.resolve({ value: queue.shift(), done: false });
+        if (closed) return Promise.resolve({ value: undefined, done: true });
+        return new Promise((res) => { waiting = res; });
+      } }; } },
+      push(text) {
+        const msg = { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null };
+        if (waiting) { const w = waiting; waiting = null; w({ value: msg, done: false }); } else queue.push(msg);
+      },
+      close() { closed = true; if (waiting) { const w = waiting; waiting = null; w({ value: undefined, done: true }); } },
+    };
+  }
+
+  let convo = null;       // { input, q, alive } — the live session
+  let currentTurn = null; // accumulators for the in-flight turn
+
+  function startConvo() {
+    const input = makeInput();
+    const q = query({
+      prompt: input.iterable,
+      options: {
+        cwd: HUB, model: MODEL, permissionMode: PERMISSION_MODE, effort: "low", // effort low = lower cost, ~0 latency
+        settingSources: ["user", "project"], includePartialMessages: true,
+        ...(sessionId ? { resume: sessionId } : {}),
+      },
+    });
+    convo = { input, q, alive: true };
+    (async () => {
+      try { for await (const ev of q) routeEvent(ev); }
+      catch (err) {
+        const m = String(err?.message || err);
+        if (sessionId && /session|resume|not\s*found|no such/i.test(m)) { clearSession(); sessionId = null; } // drop stale resume
+        if (currentTurn && !currentTurn.done) { send({ type: "error", text: m }); finalizeTurn(currentTurn); }
+      } finally { if (convo) convo.alive = false; if (currentTurn && !currentTurn.done) finalizeTurn(currentTurn); }
+    })();
+  }
+
+  function routeEvent(ev) {
+    if (ev.session_id) sessionId = ev.session_id;
+    const T = currentTurn;
+    if (!T) return;
+    if (ev.type === "stream_event") {
+      const d = ev.event?.delta;
+      if (d?.type === "text_delta" && d.text) { send({ type: "delta", text: d.text }); T.pending += d.text; pullTTS(T, false); }
+    } else if (ev.type === "assistant") {
+      for (const b of ev.message?.content || []) if (b.type === "tool_use") send({ type: "tool", name: b.name, input: summarizeInput(b.input) });
+    } else if (ev.type === "result") {
+      T.finalText = ev.result || T.finalText; finalizeTurn(T);
+    }
+  }
+
+  function enqueueTTS(T, s) { // sequential synth: preserves order, pipelines with generation
+    const t = s.trim(); if (!t) return; T.queued++;
+    T.ttsChain = T.ttsChain.then(() => synth(t)).then((b) => {
+      if (!b) return;
+      if (!T.startedSpeaking) { T.startedSpeaking = true; send({ type: "speak-start" }); }
+      sendAudio(b);
+    }).catch(() => {});
+  }
+  function pullTTS(T, final) { // pull complete sentences (terminator + following space) out of T.pending
+    let m;
+    while ((m = /^([\s\S]*?[.!?]+)\s+/.exec(T.pending))) { enqueueTTS(T, m[1]); T.pending = T.pending.slice(m[0].length); }
+    if (final && T.pending.trim()) { enqueueTTS(T, T.pending); T.pending = ""; }
+  }
+  async function finalizeTurn(T) {
+    if (T.done) return; T.done = true;
+    T.finalText = (T.finalText || "").trim();
+    if (!T.queued && !T.pending && T.finalText) T.pending = T.finalText; // no deltas → speak the result
+    pullTTS(T, true);
+    appendTurn("jarvis", T.finalText);
+    saveSession(sessionId);
+    send({ type: "result", text: T.finalText });
+    await T.ttsChain; // every sentence synthesized + sent, in order
+    send(T.startedSpeaking ? { type: "speak-end" } : { type: "idle" });
+    busy = false;
+    if (currentTurn === T) currentTurn = null;
+    if (T.resolve) T.resolve();
+  }
+
   async function speakTurn(youLabel, prompt) {
     if (busy) return send({ type: "busy" });
     busy = true;
     appendTurn("you", youLabel);
     send({ type: "thinking" });
-    let finalText = "", pending = "", startedSpeaking = false, queued = 0;
-    let ttsChain = Promise.resolve();
-    const enqueueTTS = (s) => { // sequential: preserves sentence order, pipelines with generation
-      const t = s.trim(); if (!t) return; queued++;
-      ttsChain = ttsChain.then(() => synth(t)).then((b) => {
-        if (!b) return;
-        if (!startedSpeaking) { startedSpeaking = true; send({ type: "speak-start" }); }
-        sendAudio(b);
-      }).catch(() => {});
-    };
-    const pull = (final) => { // pull complete sentences (terminator + following space) out of `pending`
-      let m;
-      while ((m = /^([\s\S]*?[.!?]+)\s+/.exec(pending))) { enqueueTTS(m[1]); pending = pending.slice(m[0].length); }
-      if (final && pending.trim()) { enqueueTTS(pending); pending = ""; }
-    };
-    try {
-      const stream = query({
-        prompt,
-        options: {
-          cwd: HUB, model: MODEL, permissionMode: PERMISSION_MODE,
-          settingSources: ["user", "project"], includePartialMessages: true,
-          ...(sessionId ? { resume: sessionId } : {}),
-        },
-      });
-      for await (const ev of stream) {
-        if (ev.session_id) sessionId = ev.session_id;
-        if (ev.type === "stream_event") {
-          const d = ev.event?.delta;
-          if (d?.type === "text_delta" && d.text) { send({ type: "delta", text: d.text }); pending += d.text; pull(false); }
-        } else if (ev.type === "assistant") {
-          for (const b of ev.message?.content || []) if (b.type === "tool_use") send({ type: "tool", name: b.name, input: summarizeInput(b.input) });
-        } else if (ev.type === "result") finalText = ev.result || finalText;
-      }
-      finalText = (finalText || "").trim();
-      if (!queued && !pending && finalText) pending = finalText; // no deltas streamed → speak the result
-      pull(true);
-      appendTurn("jarvis", finalText);
-      saveSession(sessionId);
-      send({ type: "result", text: finalText });
-      await ttsChain; // wait for every sentence to be synthesized + sent, in order
-      send(startedSpeaking ? { type: "speak-end" } : { type: "idle" });
-    } catch (err) {
-      const m = String(err?.message || err);
-      if (sessionId && /session|resume|not\s*found|no such/i.test(m)) { clearSession(); sessionId = null; } // stale resume
-      send({ type: "error", text: m });
-      try { await ttsChain; } catch {}
-      if (startedSpeaking) send({ type: "speak-end" });
-    } finally {
-      busy = false;
-    }
+    if (!convo || !convo.alive) startConvo(); // (re)spawn the warm session on first turn / after death
+    const T = { pending: "", ttsChain: Promise.resolve(), startedSpeaking: false, queued: 0, finalText: "", done: false, resolve: null };
+    currentTurn = T;
+    const wait = new Promise((res) => { T.resolve = res; });
+    try { convo.input.push(prompt); }
+    catch (err) { send({ type: "error", text: String(err?.message || err) }); busy = false; currentTurn = null; return; }
+    await wait;
   }
 
   const runTurn = (prompt) => speakTurn(prompt, prompt);
   const runBrief = () => { markBriefed(); return speakTurn("☼ Morning briefing", BRIEF_PROMPT); };
+
+  ws.on("close", () => { try { convo?.q?.close?.(); } catch {} convo = null; currentTurn = null; });
 });
 
 function bufToFloat32(buf) {
