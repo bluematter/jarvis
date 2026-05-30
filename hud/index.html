@@ -275,7 +275,8 @@ function connect() {
 }
 let streamed = "", wakeArmTimer = null;
 function handle(m) {
-  if (m.type === "wake") { wakeFlare(); return; } // "Hey Jarvis <command>" in one breath — acknowledge, the turn follows
+  if (m.type === "wake-fire") { wakeFlare(); beginCommand(); return; } // openWakeWord heard "Hey Jarvis" → flare + capture the command
+  if (m.type === "wake") { wakeFlare(); return; } // (legacy) "Hey Jarvis <command>" in one breath — acknowledge, the turn follows
   if (m.type === "wake-armed") { // bare "Hey Jarvis" — flare, then stay visibly engaged for the command
     wakeFlare(); armedListening = true; mode = "idle"; setState("listening", "Listening…");
     clearTimeout(wakeArmTimer);
@@ -363,7 +364,11 @@ async function initAudio() {
     micAnalyser = actx.createAnalyser(); micAnalyser.fftSize = 512; src.connect(micAnalyser);
     playAnalyser = actx.createAnalyser(); playAnalyser.fftSize = 512;
     const proc = actx.createScriptProcessor(4096, 1, 1);
-    proc.onaudioprocess = (e) => { if (capturing) capBuf.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+    proc.onaudioprocess = (e) => {
+      const ch = e.inputBuffer.getChannelData(0);
+      if (capturing) capBuf.push(new Float32Array(ch));
+      else if (WAKE_MODE && wsReady) streamWake(ch); // stream to the bridge for "hey jarvis" detection
+    };
     src.connect(proc);
     const mute = actx.createGain(); mute.gain.value = 0; proc.connect(mute); mute.connect(actx.destination);
     clapLoop();
@@ -389,7 +394,7 @@ function stopListen() {
   const pcm = mergeDownsample(capBuf, actx.sampleRate, 16000); capBuf = [];
   if (pcm.length < 2400) { mode = "idle"; setState("idle", "…"); return; }
   mode = "thinking"; setState("transcribing", "…");
-  if (wsReady) { ws.send(JSON.stringify({ type: "utterance", gate: currentGate })); ws.send(pcm.buffer); }
+  sendTagged(0, pcm);
 }
 function mergeDownsample(chunks, inRate, outRate) {
   let len = 0; for (const c of chunks) len += c.length;
@@ -403,30 +408,58 @@ function mergeDownsample(chunks, inRate, outRate) {
   }
   return out;
 }
+// binary frames to the bridge carry a 4-byte tag: 0 = a captured command (Float32 [-1,1]) · 1 = wake stream (Int16)
+function sendTagged(tag, ta) {
+  if (!wsReady) return;
+  const out = new ArrayBuffer(4 + ta.byteLength);
+  new DataView(out).setInt32(0, tag, true);
+  new Uint8Array(out, 4).set(new Uint8Array(ta.buffer, ta.byteOffset, ta.byteLength));
+  ws.send(out);
+}
+// stream one mic block to the bridge as 16kHz Int16 (int16 magnitude — what openWakeWord expects)
+function streamWake(block) {
+  const ds = mergeDownsample([new Float32Array(block)], actx.sampleRate, 16000);
+  const i16 = new Int16Array(ds.length);
+  for (let j = 0; j < ds.length; j++) { const s = ds[j] * 32768; i16[j] = s > 32767 ? 32767 : s < -32768 ? -32768 : s | 0; }
+  sendTagged(1, i16);
+}
+// command capture: opened when "hey jarvis" fires (or for a conversation follow-up); endpoints on silence
+let commandCap = false, cmdHeard = false, cmdTimer = null;
+function beginCommand() {
+  if (mode === "thinking" || listening) return;
+  clearTimeout(cmdTimer); commandCap = true; cmdHeard = false;
+  startListen();                                   // capture begins (also barges in on any playback)
+  cmdTimer = setTimeout(() => { if (commandCap) endCommand(); }, 7000); // give up if nothing is said
+}
+function endCommand() { if (!commandCap) return; commandCap = false; cmdHeard = false; clearTimeout(cmdTimer); stopListen(); }
 
 // ---------- playback queue (TTS audio streamed from the bridge) ----------
 let aqueue = [], aplaying = false, curSrc = null, speakEnded = false;
 // queue RAW buffers in arrival order (WS order is correct); decode one-at-a-time at play
 // time. Decoding on arrival scrambled order — short sentences decoded first and played early.
+function clog(m) { try { if (wsReady) ws.send(JSON.stringify({ type: "clientlog", msg: m })); } catch {} }
 function enqueueAudio(arrayBuffer) {
   if (!actx) return;
   aqueue.push(arrayBuffer);
+  clog(`rx audio ${arrayBuffer.byteLength}b · q=${aqueue.length} playing=${aplaying} st=${actx.state}`);
   if (!aplaying) playNext();
 }
 async function playNext() {
-  if (!aqueue.length) { aplaying = false; if (speakEnded) finishSpeaking(); return; }
+  if (!aqueue.length) { aplaying = false; clog(`queue empty · speakEnded=${speakEnded}`); if (speakEnded) finishSpeaking(); return; }
   aplaying = true; mode = "speaking";
-  if (actx.state === "suspended") { try { await actx.resume(); } catch {} } // a long think can suspend the output → wake it
+  if (actx.state === "suspended") { clog("ctx suspended → resume"); try { await actx.resume(); } catch (e) { clog("resume FAIL " + e); } }
   let buf;
-  try { buf = await actx.decodeAudioData(aqueue.shift().slice(0)); } catch { return playNext(); }
-  if (!aplaying) return; // stopped mid-decode (barge-in)
+  try { buf = await actx.decodeAudioData(aqueue.shift().slice(0)); } catch (e) { clog("decode FAIL → skip: " + e); return playNext(); }
+  if (!aplaying) { clog("aborted post-decode (aplaying false)"); return; } // stopped mid-decode (barge-in)
   curSrc = actx.createBufferSource(); curSrc.buffer = buf;
   curSrc.connect(playAnalyser); playAnalyser.connect(actx.destination);
-  curSrc.onended = () => { curSrc = null; playNext(); };
+  curSrc.onended = () => { clog(`▣ ended · q=${aqueue.length}`); curSrc = null; playNext(); };
   curSrc.start();
+  clog(`▶ playing ${buf.duration.toFixed(2)}s · st=${actx.state}`);
 }
-function stopPlayback() { aqueue = []; speakEnded = false; if (curSrc) { try { curSrc.onended = null; curSrc.stop(); } catch {} curSrc = null; } aplaying = false; }
-function finishSpeaking() { speakEnded = false; if (mode === "speaking") { mode = "idle"; setState("idle", caption.textContent); } }
+function stopPlayback() { clog(`STOP playback · q=${aqueue.length} mode=${mode}`); aqueue = []; speakEnded = false; if (curSrc) { try { curSrc.onended = null; curSrc.stop(); } catch {} curSrc = null; } aplaying = false; }
+function finishSpeaking() { clog("finishSpeaking"); speakEnded = false; if (mode === "speaking") { mode = "idle"; setState("idle", caption.textContent); if (WAKE_MODE) openFollowup(); } }
+function openFollowup() { beginCommand(); } // conversation: after Jarvis answers, listen for a reply without re-saying "Hey Jarvis"
 
 // ---------- mic level + double-clap wake (off) + hands-free "Hey Jarvis" VAD ----------
 const CLAP_WAKE = false;
@@ -446,12 +479,12 @@ function clapLoop() {
       if (claps >= 2) { claps = 0; startListen(); }
     }
     prev = peak;
-    // hands-free: capture a speech burst, send it wake-gated (bridge runs it only if it contains "jarvis")
-    if (WAKE_MODE) {
-      if (!vad) { if (mode === "idle" && peak > VSTART) { vad = true; silence = 0; startListen("wake"); } }
-      else if (mode === "listening") { if (peak < VEND) { if (++silence > VHANG) { vad = false; stopListen(); } } else silence = 0; }
-      else vad = false; // a turn (thinking/speaking) took over
-    } else vad = false;
+    // endpoint a command capture (opened after "hey jarvis" fired, or for a conversation follow-up):
+    // wait for speech onset, then end on a stretch of silence. Wake DETECTION itself is openWakeWord on the bridge.
+    if (commandCap && listening) {
+      if (peak > VSTART) { cmdHeard = true; silence = 0; }
+      else if (cmdHeard && ++silence > VHANG) endCommand();
+    } else silence = 0;
   }, 40);
 }
 function armedHint() {

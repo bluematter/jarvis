@@ -12,6 +12,8 @@ import { WebSocketServer } from "ws";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { ROOT } from "./env.mjs"; // loads .env into process.env (must be first)
 import { warmVoice, transcribe, synth, setVoice, currentVoice } from "./voice.mjs";
+import { loadWakeWord, createDetector } from "./wakeword.mjs";
+const WAKE_THRESHOLD = Number(process.env.JARVIS_WAKE_THRESHOLD || 0.5); // openWakeWord "hey jarvis" score to fire
 
 const HUD_DIR = join(ROOT, "hud");
 const env = process.env;
@@ -255,6 +257,8 @@ wss.on("connection", (ws) => {
   const speechOnly = (s) => (s || "").replace(/[\(\[][^)\]]*[\)\]]/g, " ").replace(/\s+/g, " ").trim();
   const send = (obj) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(obj));
   const sendAudio = (buf) => ws.readyState === ws.OPEN && ws.send(buf, { binary: true });
+  const detector = createDetector({ threshold: WAKE_THRESHOLD }); // per-connection openWakeWord state
+  let wakeChain = Promise.resolve(); // serialize async wake feeds so they don't race the rolling buffers
 
   send({ type: "ready", hub: HUB });
   send({ type: "history", items: recentTurns(30) }); // replay so the feed isn't blank on reload
@@ -263,54 +267,39 @@ wss.on("connection", (ws) => {
   warmVoice().then(() => send({ type: "voice-ready", voice: currentVoice() })).catch(() => {});
 
   ws.on("message", async (data, isBinary) => {
-    // binary frame = recorded utterance (Float32 PCM @16k) -> transcribe -> run
     if (isBinary) {
-      const gate = pendingGate; pendingGate = "none";
+      const b = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      const tag = b.readInt32LE(0); // 1 = continuous wake-word stream · 0 = a captured command/utterance
+      if (tag === 1) { // openWakeWord stream: Int16 PCM @16k (int16 magnitude), detect "hey jarvis"
+        const n = (b.length - 4) >> 1, frame = new Float32Array(n);
+        for (let i = 0; i < n; i++) frame[i] = b.readInt16LE(4 + i * 2);
+        wakeChain = wakeChain.then(() => detector.feed(frame, Date.now())).then((fired) => {
+          if (fired) { console.log(`[wake] FIRE ${detector.score().toFixed(2)}`); send({ type: "wake-fire" }); }
+        }).catch(() => {});
+        return;
+      }
+      // tag 0: a command captured AFTER the wake fired (or push-to-talk) — Float32 [-1,1] @16k -> run directly
       if (busy) return send({ type: "busy" });
       send({ type: "transcribing" });
+      const n = (b.length - 4) >> 2, audio = new Float32Array(n);
+      for (let i = 0; i < n; i++) audio[i] = b.readFloatLE(4 + i * 4);
       let text = "";
       const stStt = Date.now();
-      try {
-        text = await transcribe(bufToFloat32(data));
-      } catch (err) {
-        return send({ type: "error", text: "STT: " + (err?.message || err) });
-      }
+      try { text = await transcribe(audio); }
+      catch (err) { return send({ type: "error", text: "STT: " + (err?.message || err) }); }
       lastSttMs = Date.now() - stStt;
-      if (gate === "wake") { // hands-free: only act when addressed to Jarvis
-        const speech = speechOnly(text);
-        const { hit, command } = parseWake(speech);
-        const inWindow = awaitingCommand && Date.now() - awaitingSince < FOLLOWUP_MS;
-        if (hit) {
-          if (command) { // "Hey Jarvis, what's revenue" — wake + command in one breath
-            awaitingCommand = false;
-            console.log(`[wake] RUN "${command}"`);
-            send({ type: "wake" }); // flare + shimmer the moment it hears its name
-            send({ type: "transcript", text: command });
-            return runTurn(command);
-          }
-          // bare "Hey Jarvis" — arm the follow-up window and tell the HUD to keep listening
-          awaitingCommand = true; awaitingSince = Date.now();
-          console.log(`[wake] armed — awaiting command`);
-          return send({ type: "wake-armed" });
-        }
-        if (inWindow && speech && !NOISE.test(speech)) { // the command after a bare "Hey Jarvis" (the pause split it in two)
-          awaitingCommand = false;
-          console.log(`[wake] RUN (follow-up) "${speech}"`);
-          send({ type: "transcript", text: speech });
-          return runTurn(speech);
-        }
-        console.log(`[wake] heard "${text}" -> ignored`);
-        return send({ type: "idle" });
-      }
-      send({ type: "transcript", text });
-      if (!text) return send({ type: "idle" });
-      return runTurn(text);
+      const clean = speechOnly(text);
+      send({ type: "transcript", text: clean });
+      if (!clean) return send({ type: "idle" });
+      console.log(`[wake] RUN "${clean}"`);
+      return runTurn(clean);
     }
-    // text frame = JSON control (typed prompt / utterance gate)
+    // text frame = JSON control
     let msg;
     try { msg = JSON.parse(data.toString()); } catch { return; }
-    if (msg.type === "utterance") { pendingGate = msg.gate === "wake" ? "wake" : "none"; return; } // tags the next binary frame
     if (msg.type === "voice" && msg.name) { if (setVoice(msg.name)) console.log(`[voice] -> ${msg.name}`); return; }
+    if (msg.type === "clientlog") { console.log(`[client] ${msg.msg}`); return; } // temporary: surface HUD playback events in the log
+
     if (msg.type === "prompt" && msg.text?.trim()) return runTurn(msg.text);
     if (msg.type === "search" && msg.text?.trim()) return runSearch(msg.text);
     if (msg.type === "brief") return runBrief();
@@ -535,4 +524,5 @@ httpServer.listen(PORT, () => {
     speed: env.JARVIS_TTS_SPEED ? Number(env.JARVIS_TTS_SPEED) : undefined,
     log: (m) => console.log("  " + m),
   }).catch((e) => console.log("  voice FAILED: " + (e?.message || e)));
+  loadWakeWord((m) => console.log("  " + m)).catch((e) => console.log("  wake FAILED: " + (e?.message || e)));
 });

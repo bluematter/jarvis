@@ -21,3 +21,6 @@ hub/metrics/*.md
 !hub/metrics/.gitkeep
 hub/projects/*.md
 !hub/projects/.gitkeep
+
+# openWakeWord models (downloaded on first boot)
+bridge/models/*.onnx
