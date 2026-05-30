@@ -153,6 +153,11 @@
     border-bottom: 1px solid rgba(56,225,255,.1); letter-spacing: .14em; text-transform: uppercase;
     font-size: .8rem; color: #8fd2ea; }
   .board-h a { color: #4d6f7e; cursor: pointer; font-size: 1.1rem; } .board-h a:hover { color: var(--c); }
+  .kfilter { display: flex; gap: 8px; flex-wrap: wrap; padding: 12px 22px; border-bottom: 1px solid rgba(56,225,255,.08); }
+  .kfchip { font-size: .68rem; letter-spacing: .06em; color: #6f95a8; background: rgba(8,18,28,.7); border: 1px solid #123247;
+    padding: 5px 12px; border-radius: 999px; cursor: pointer; transition: .15s; }
+  .kfchip:hover { border-color: rgba(56,225,255,.4); color: #cfeefb; }
+  .kfchip.on { background: rgba(56,225,255,.12); border-color: var(--c); color: var(--c); }
   .cols { flex: 1; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1px; background: rgba(56,225,255,.08); overflow: hidden; }
   .kcol { background: #050f18; display: flex; flex-direction: column; overflow: hidden; }
   .kcol h3 { font-size: .64rem; letter-spacing: .22em; text-transform: uppercase; color: #4d6f7e; padding: 14px 16px 10px; font-weight: 500; }
@@ -227,6 +232,7 @@
 <div id="board" class="board" hidden>
   <div class="board-card">
     <div class="board-h"><span>⊞ Work Orders</span><a id="boardClose" title="Close (Esc)">✕</a></div>
+    <div class="kfilter" id="kfilter"></div>
     <div class="cols">
       <div class="kcol"><h3>Proposed</h3><div class="kbody" id="k-proposed"></div></div>
       <div class="kcol"><h3>In Progress</h3><div class="kbody" id="k-in_progress"></div></div>
@@ -449,9 +455,11 @@ addEventListener("keydown", (e) => {
   if ((e.key === "o" || e.key === "O") && !typing(e)) { e.preventDefault(); board.hidden ? openBoard() : closeBoard(); }
   else if (e.key === "Escape" && !board.hidden) closeBoard();
 });
+const REPO_LABEL = { eatiq: "BasedHealth", "eatiq-mobile": "BasedHealth", "gluely-app": "Gluely", wireflow: "Wireflow", "basedlabs-hub": "BasedLabs", rizz: "Rizz" };
+const repoLabel = (r) => REPO_LABEL[r] || r;
 const kempty = (t) => `<div class="kempty">${escape(t)}</div>`;
 function orderCard(o) {
-  const repo = `<span class="krepo">${escape(o.repo)}</span>`;
+  const repo = `<span class="krepo">${escape(repoLabel(o.repo))}</span>`;
   if (o.status === "proposed" || o.status === "failed") {
     return `<div class="kcard ${o.status === "failed" ? "kfail" : ""}">${repo}<div class="ktitle">${escape(o.title)}</div><div class="kbrief">${escape((o.brief || "").slice(0, 200))}</div>${o.status === "failed" ? `<div class="kerr">${escape(o.summary || "failed")}</div>` : ""}<button class="kbtn" data-dispatch="${escape(o.id)}">▶ ${o.status === "failed" ? "Retry" : "Dispatch"}</button></div>`;
   }
@@ -474,14 +482,27 @@ function wireCol(scope) {
     card.appendChild(pre); b.textContent = "hide diff";
   }));
 }
+let allOrders = [], boardFilter = "all", filterSig = "";
 async function refreshOrders() {
-  let orders; try { orders = await (await fetch("/orders", { cache: "no-store" })).json(); } catch { return; }
+  try { allOrders = await (await fetch("/orders", { cache: "no-store" })).json(); } catch { return; }
+  renderBoard();
+}
+function renderBoard() {
+  const repos = [...new Set(allOrders.map((o) => o.repo))].sort();
+  const fsig = boardFilter + "|" + repos.join(",");
+  if (fsig !== filterSig) { // rebuild filter chips when the repo set or active filter changes
+    filterSig = fsig;
+    $("kfilter").innerHTML = ["all", ...repos].map((r) =>
+      `<span class="kfchip ${boardFilter === r ? "on" : ""}" data-filter="${escape(r)}">${r === "all" ? "All" : escape(repoLabel(r))}</span>`).join("");
+    $("kfilter").querySelectorAll("[data-filter]").forEach((c) => (c.onclick = () => { boardFilter = c.dataset.filter; renderBoard(); }));
+  }
+  const shown = boardFilter === "all" ? allOrders : allOrders.filter((o) => o.repo === boardFilter);
   const cols = { proposed: [], in_progress: [], done: [] };
-  for (const o of orders) { const s = o.status === "failed" ? "proposed" : (cols[o.status] ? o.status : "proposed"); cols[s].push(o); }
+  for (const o of shown) { const s = o.status === "failed" ? "proposed" : (cols[o.status] ? o.status : "proposed"); cols[s].push(o); }
   for (const key of ["proposed", "in_progress", "done"]) {
     const list = cols[key];
-    const sig = list.map((o) => o.id + o.status + (o.lastActivity || "") + (o.summary || "")).join("|");
-    if (sig === colSig[key]) continue; // only re-render a column that changed (keeps open diffs alive)
+    const sig = boardFilter + "::" + list.map((o) => o.id + o.status + (o.lastActivity || "") + (o.summary || "")).join("|");
+    if (sig === colSig[key]) continue; // only re-render a changed column (keeps open diffs alive)
     colSig[key] = sig;
     const el = $("k-" + key);
     el.innerHTML = list.map(orderCard).join("") || kempty(EMPTY[key]);
