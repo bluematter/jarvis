@@ -22,7 +22,7 @@ pnpm scan                   # builds hub/fleet.md from all your projects
 pnpm jarvis                 # starts the bridge + HUD
 ```
 
-Open **http://localhost:4317** (Chrome recommended for voice). Hold **Space** or the mic button to talk, or **double-clap** to wake. Jarvis speaks its replies.
+Open **http://localhost:4317** (Chrome recommended for voice). Hold **Space** or the mic button to talk, or just say **"Hey Jarvis"** hands-free (toggle with `J`). Jarvis speaks its replies — switch his voice **Daniel ↔ George** with `V`.
 
 `pnpm dev` does scan + start in one go.
 
@@ -41,14 +41,14 @@ model with `JARVIS_MODEL` (default left blank = your Claude Code default; Sonnet
 - **`hub/`** is the brain. `hub/CLAUDE.md` is the Jarvis persona; `hub/fleet.md` (generated) is the live status of every project; `hub/metrics/` caches business data. Claude Code runs *from this directory*, so it sees all of it.
 - **`scripts/scan-fleet.mjs`** walks `PROJECTS_ROOT`, reads each project's CLAUDE.md + git state, and writes `fleet.md`. Re-run it (or schedule it) to keep Jarvis current.
 - **`bridge/server.mjs`** drives Claude Code via the Agent SDK with `settingSources: ["user","project"]`, so it loads `hub/CLAUDE.md` **and your existing MCP servers** (PostHog, RevenueCat, GSC, Gmail…). Sessions resume across turns, so it's a continuous conversation.
-- **`hud/index.html`** is the interface: a 3-column dashboard — **left:** live cards (Fleet + Revenue + Search + Product, polled from `/state`); **center:** the reactive orb, double-clap wake, push-to-talk; **right:** live tool-activity feed. The Fleet card populates immediately from `pnpm scan`; the rest fill in after `pnpm metrics`.
+- **`hud/index.html`** is the interface: a 3-column dashboard — **left:** live cards (Fleet + Revenue + Search + Product, polled from `/state`); **center:** the reactive orb with a cinematic wake flare (ring ripple + chime the instant it hears its name), hands-free "Hey Jarvis", push-to-talk; **right:** live tool-activity feed. The Fleet card populates immediately from `pnpm scan`; the rest fill in after `pnpm metrics`.
 
 ## Voice: fully local & offline
 
 STT and TTS both run **on your machine as ONNX in Node — no Python, no cloud, no API keys**:
 
 - **STT:** Whisper (`whisper-base.en`) via `@huggingface/transformers`. The browser captures raw mic PCM, downsamples to 16 kHz, and ships it to the bridge.
-- **TTS:** Kokoro-82M via `kokoro-js`, streamed back **per sentence** so Jarvis starts talking before the whole reply is synthesized. Default voice `bm_george` (British male).
+- **TTS:** Kokoro-82M via `kokoro-js`, streamed back **per sentence** so Jarvis starts talking before the whole reply is synthesized. Two British-male voices — **Daniel** (`bm_daniel`, default) and **George** (`bm_george`) — toggle live with `V` (no reload; Kokoro takes the voice per-utterance). Set the startup voice with `JARVIS_VOICE`.
 
 Models download once on first run (~150 MB total) to the HF cache, then run locally. Configure model/voice/quality in `.env`. **Barge-in** is on — clap or hold Space while Jarvis is talking and he stops to listen.
 
