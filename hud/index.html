@@ -281,7 +281,7 @@ function handle(m) {
   else if (m.type === "delta") { streamed += m.text; caption.textContent = streamed; caption.scrollTop = caption.scrollHeight; }
   else if (m.type === "tool") addTool(m.name, m.input);
   else if (m.type === "result") { const t = m.text || streamed; caption.textContent = t || "Done."; caption.scrollTop = 0; }
-  else if (m.type === "speak-start") { mode = "speaking"; setState("speaking", caption.textContent); }
+  else if (m.type === "speak-start") { mode = "speaking"; if (actx && actx.state === "suspended") actx.resume(); setState("speaking", caption.textContent); }
   else if (m.type === "speak-end") { speakEnded = true; if (!aplaying) finishSpeaking(); }
   else if (m.type === "idle") { mode = "idle"; setState("idle", caption.textContent); }
   else if (m.type === "busy") setState("thinking", "One thing at a time…");
@@ -403,6 +403,7 @@ function enqueueAudio(arrayBuffer) {
 async function playNext() {
   if (!aqueue.length) { aplaying = false; if (speakEnded) finishSpeaking(); return; }
   aplaying = true; mode = "speaking";
+  if (actx.state === "suspended") { try { await actx.resume(); } catch {} } // a long think can suspend the output → wake it
   let buf;
   try { buf = await actx.decodeAudioData(aqueue.shift().slice(0)); } catch { return playNext(); }
   if (!aplaying) return; // stopped mid-decode (barge-in)
