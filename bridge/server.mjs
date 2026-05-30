@@ -12,7 +12,7 @@ import { WebSocketServer } from "ws";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { createRequire } from "node:module";
 const pty = createRequire(import.meta.url)("node-pty"); // CJS native module; real PTYs for the in-HUD terminal
-import { ROOT } from "./env.mjs"; // loads .env into process.env (must be first)
+import { ROOT, ENV_KEYS } from "./env.mjs"; // loads .env into process.env (must be first); ENV_KEYS = its secret key names
 import { warmVoice, transcribe, synth, setVoice, currentVoice } from "./voice.mjs";
 import { loadWakeWord, createDetector } from "./wakeword.mjs";
 import { loadSilero, createVAD } from "./silero.mjs";
@@ -501,7 +501,11 @@ async function pollMerges() { // if you merged the PR yourself on GitHub, sync l
 }
 
 // --- websocket bridge ---
-const wss = new WebSocketServer({ server: httpServer });
+// Origin allowlist: a WebSocket isn't bound by same-origin policy, so a malicious website open in your
+// browser could otherwise connect to ws://localhost:4317 and drive the shell. Browsers always send Origin;
+// non-browser local clients (which already have shell access) send none.
+const WS_ORIGINS = new Set([`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`]);
+const wss = new WebSocketServer({ server: httpServer, verifyClient: ({ origin }) => !origin || WS_ORIGINS.has(origin) });
 
 // proactive notifications: a HUD toast (all open tabs) + a native macOS notification
 const broadcast = (obj) => { const s = JSON.stringify(obj); for (const c of wss.clients) if (c.readyState === 1) c.send(s); };
@@ -527,18 +531,23 @@ function termSpawn({ project = "", cmd = "", label = "", cols = 100, rows = 30 }
   const shell = process.env.SHELL || "/bin/zsh";
   const args = cmd ? ["-lic", `${cmd}; exec ${shell} -li`] : ["-li"]; // run cmd then keep an interactive shell, else just a shell
   const env = { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor", LANG: process.env.LANG || "en_US.UTF-8" };
+  for (const k of ENV_KEYS) delete env[k]; // don't leak Jarvis's .env secrets into the interactive shell (the login shell loads your own)
   let p; try { p = pty.spawn(shell, args, { name: "xterm-256color", cols, rows, cwd, env }); } catch (e) { console.log("[term] spawn failed:", e?.message || e); return null; }
-  const s = { id, label: label || project || "shell", project, cwd, pty: p, buffer: "", cols, rows, status: "running", exited: false, createdAt: new Date().toISOString() };
+  const s = { id, label: label || project || "shell", project, cwd, pty: p, buffer: "", outbuf: "", flush: null, cols, rows, status: "running", exited: false, createdAt: new Date().toISOString() };
   termSessions.set(id, s);
-  p.onData((d) => { s.buffer = (s.buffer + d).slice(-TERM_SCROLLBACK); broadcast({ type: "term-data", id, data: d }); });
-  p.onExit(({ exitCode }) => { s.status = "exited"; s.exited = true; broadcast({ type: "term-exit", id, code: exitCode }); broadcastTerms(); });
+  p.onData((d) => { // coalesce bursts (a TUI redraw is many small chunks) into one ~12ms frame — smoother + far less WS chatter
+    if (s.exited) return;
+    s.buffer = (s.buffer + d).slice(-TERM_SCROLLBACK); s.outbuf += d;
+    if (!s.flush) s.flush = setTimeout(() => { const data = s.outbuf; s.outbuf = ""; s.flush = null; if (data) broadcast({ type: "term-data", id, data }); }, 12);
+  });
+  p.onExit(({ exitCode }) => { s.status = "exited"; s.exited = true; if (s.flush) { clearTimeout(s.flush); s.flush = null; } if (s.outbuf) { broadcast({ type: "term-data", id, data: s.outbuf }); s.outbuf = ""; } broadcast({ type: "term-exit", id, code: exitCode }); broadcastTerms(); });
   console.log(`[term] spawned ${id} (${s.label}) in ${cwd}${cmd ? " · " + cmd : ""}`);
   broadcastTerms();
   return s;
 }
-const termWrite = (id, data) => { const s = termSessions.get(id); if (s && !s.exited && typeof data === "string") s.pty.write(data); };
+const termWrite = (id, data) => { const s = termSessions.get(id); if (s && !s.exited && typeof data === "string" && data.length <= 100000) s.pty.write(data); };
 const termResize = (id, cols, rows) => { const s = termSessions.get(id); if (s && !s.exited && cols > 0 && rows > 0) { s.cols = cols; s.rows = rows; try { s.pty.resize(cols, rows); } catch {} } };
-const termKill = (id) => { const s = termSessions.get(id); if (!s) return; try { s.pty.kill(); } catch {} termSessions.delete(id); console.log(`[term] killed ${id}`); broadcastTerms(); };
+const termKill = (id) => { const s = termSessions.get(id); if (!s) return; if (s.flush) { clearTimeout(s.flush); s.flush = null; } try { s.pty.kill(); } catch {} termSessions.delete(id); console.log(`[term] killed ${id}`); broadcastTerms(); };
 
 // Fuzzy "Hey Jarvis" detector — base.en Whisper mangles "Jarvis" (adjargos, jervis, charvis, javis…).
 // Returns { hit, command }; command = the words after the wake token ("" for a bare "Hey Jarvis").

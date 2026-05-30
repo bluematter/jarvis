@@ -299,7 +299,7 @@
   .tstart.shell { color: var(--c); border-color: rgba(56,225,255,.3); }
   .tstart.shell:hover { background: rgba(56,225,255,.12); border-color: var(--c); }
   .thost { flex: 1; position: relative; background: rgba(2,9,16,.6); overflow: hidden; }
-  .tpane { position: absolute; inset: 0; padding: 10px 6px 8px 14px; }
+  .tpane { position: absolute; inset: 0; padding: 10px 16px 8px 14px; } /* right pad clears the xterm scrollbar so the last column isn't cut off */
   .tpane[hidden] { display: none; }
   .thost .xterm { height: 100%; }
   .thost .xterm-viewport::-webkit-scrollbar { width: 9px; }
@@ -840,30 +840,32 @@ const TERM_THEME = {
   brightBlack: "#3a5460", brightRed: "#ff8e8e", brightGreen: "#9affdb", brightYellow: "#ffe6a8", brightBlue: "#8fd0ff", brightMagenta: "#cda0ff", brightCyan: "#7ef0ff", brightWhite: "#f2fbff",
 };
 let allTerms = [];        // session metadata from the bridge
-const terms = new Map();  // id -> { term, fit, pane, attached, pending }
+const terms = new Map();  // id -> { term, fit, pane, attached }
 let activeTerm = null;
+const pickActive = () => { const live = allTerms.filter((s) => !s.exited), pool = live.length ? live : allTerms; return pool[pool.length - 1]; }; // prefer the latest still-running session
 function makeTerm(id) {
   const pane = document.createElement("div"); pane.className = "tpane"; pane.dataset.id = id; thost.appendChild(pane);
   const term = new Terminal({
-    allowProposedApi: true, allowTransparency: true, theme: TERM_THEME, scrollback: 8000,
+    allowProposedApi: true, allowTransparency: false, theme: TERM_THEME, scrollback: 8000,
     fontFamily: "'JetBrains Mono','SF Mono',ui-monospace,Menlo,monospace", fontSize: 13, lineHeight: 1.15,
     cursorBlink: true, cursorStyle: "bar", smoothScrollDuration: 60,
   });
   const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(pane);
   term.onData((d) => wsReady && ws.send(JSON.stringify({ type: "term-input", id, data: d })));
-  const rec = { term, fit, pane, attached: false, pending: [] }; terms.set(id, rec);
+  const rec = { term, fit, pane, attached: false }; terms.set(id, rec);
+  const ro = new ResizeObserver(() => fitTerm(id)); ro.observe(pane); rec.ro = ro; // refit whenever the pane's size settles (open, tab-switch, window resize)
   if (wsReady) ws.send(JSON.stringify({ type: "term-attach", id })); // bridge replays the scrollback buffer
   return rec;
 }
 function termData(id, data, replay) {
   const rec = terms.get(id); if (!rec) return; // a session we haven't opened a view for yet (bridge keeps the buffer)
-  if (replay) { rec.term.reset(); rec.term.write(data); rec.attached = true; for (const d of rec.pending) rec.term.write(d); rec.pending = []; }
+  if (replay) { rec.term.reset(); rec.term.write(data); rec.attached = true; } // live chunks before this are already IN the replay buffer (WS preserves order) — don't re-write
   else if (rec.attached) rec.term.write(data);
-  else rec.pending.push(data); // buffer live data until the replay lands, so nothing double-writes
+  // else: live data arriving before our replay lands — already included in the replay, so ignore
 }
 function fitTerm(id) {
-  const rec = terms.get(id); if (!rec || termpanel.hidden) return;
-  try { rec.fit.fit(); const { cols, rows } = rec.term; if (wsReady && cols && rows) ws.send(JSON.stringify({ type: "term-resize", id, cols, rows })); } catch {}
+  const rec = terms.get(id); if (!rec || termpanel.hidden || rec.pane.hidden) return; // only the visible pane has real dimensions
+  try { rec.fit.fit(); const { cols, rows } = rec.term; if (wsReady && cols && rows && (cols !== rec.cols || rows !== rec.rows)) { rec.cols = cols; rec.rows = rows; ws.send(JSON.stringify({ type: "term-resize", id, cols, rows })); } } catch {}
 }
 function activateTerm(id) {
   if (!allTerms.find((s) => s.id === id)) return;
@@ -885,7 +887,7 @@ function killTerm(id) {
   if (wsReady) ws.send(JSON.stringify({ type: "term-kill", id }));
   const rec = terms.get(id); if (rec) { try { rec.term.dispose(); } catch {} rec.pane.remove(); terms.delete(id); }
   allTerms = allTerms.filter((s) => s.id !== id);
-  if (activeTerm === id) { activeTerm = null; const next = allTerms[allTerms.length - 1]; if (next && !termpanel.hidden) activateTerm(next.id); else { tempty.hidden = allTerms.length > 0; renderTabs(); } }
+  if (activeTerm === id) { activeTerm = null; const next = pickActive(); if (next && !termpanel.hidden) activateTerm(next.id); else { tempty.hidden = allTerms.length > 0; renderTabs(); } }
   else renderTabs();
   updateTermChip();
 }
@@ -894,7 +896,7 @@ function handleTermList(sessions) {
   for (const id of [...terms.keys()]) if (!allTerms.find((s) => s.id === id)) { const r = terms.get(id); try { r.term.dispose(); } catch {} r.pane.remove(); terms.delete(id); }
   if (activeTerm && !allTerms.find((s) => s.id === activeTerm)) activeTerm = null;
   if (!termpanel.hidden) {
-    if (!activeTerm && allTerms.length) activateTerm(allTerms[allTerms.length - 1].id);
+    if (!activeTerm && allTerms.length) activateTerm(pickActive().id);
     else { tempty.hidden = allTerms.length > 0; renderTabs(); }
   }
   updateTermChip();
@@ -912,7 +914,7 @@ function spawnTerm(kind) {
 function openTerm() {
   termpanel.hidden = false; if (wsReady) ws.send(JSON.stringify({ type: "term-list" }));
   termnew.hidden = allTerms.length > 0; // auto-open the picker when there's nothing yet
-  if (activeTerm) activateTerm(activeTerm); else if (allTerms.length) activateTerm(allTerms[allTerms.length - 1].id); else { tempty.hidden = false; renderTabs(); }
+  if (activeTerm) activateTerm(activeTerm); else if (allTerms.length) activateTerm(pickActive().id); else { tempty.hidden = false; renderTabs(); }
 }
 const closeTerm = () => (termpanel.hidden = true);
 termBtn.onclick = () => (termpanel.hidden ? openTerm() : closeTerm());
@@ -928,7 +930,7 @@ $("tCmd").addEventListener("keydown", (e) => {
 });
 addEventListener("keydown", (e) => { if ((e.key === "t" || e.key === "T") && !typing(e)) { e.preventDefault(); termpanel.hidden ? openTerm() : closeTerm(); } });
 termpanel.addEventListener("mousedown", (e) => { if (e.target === termpanel) closeTerm(); }); // backdrop closes; Esc stays with the terminal
-addEventListener("resize", () => { if (!termpanel.hidden && activeTerm) fitTerm(activeTerm); });
+let termResizeT; addEventListener("resize", () => { clearTimeout(termResizeT); termResizeT = setTimeout(() => { if (!termpanel.hidden && activeTerm) fitTerm(activeTerm); }, 150); });
 const REPO_LABEL = { wireflow: "Wireflow", "gluely-app": "Gluely", eatiq: "BasedHealth", "eatiq-mobile": "BasedHealth", rizz: "Rizzly", "basedlabs-hub": "BasedLabs" };
 const MAIN_PROJECTS = ["wireflow", "gluely-app", "eatiq", "rizz", "basedlabs-hub"]; // always-shown focus filters
 const repoLabel = (r) => REPO_LABEL[r] || r;
