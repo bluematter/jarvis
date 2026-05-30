@@ -15,9 +15,12 @@ const STABLE = /^(usdc|usdt|dai|usdbc|usds|musd|usde|pyusd)$/i;
 const OUT = join(ROOT, "hub", "metrics", "wallet.card.json");
 const write = (c) => writeFileSync(OUT, JSON.stringify({ ...c, updatedAt: new Date().toISOString() }, null, 2));
 const fmt = (n) => "$" + Math.round(n).toLocaleString("en-US");
-function getJSON(u) {
-  const c = new AbortController(), t = setTimeout(() => c.abort(), 15000);
-  return fetch(u, { headers: { "User-Agent": "jarvis/1.0", Accept: "application/json" }, signal: c.signal }).then((r) => r.json()).finally(() => clearTimeout(t));
+async function getJSON(u, tries = 3) {
+  for (let i = 0; i < tries; i++) {
+    const c = new AbortController(), t = setTimeout(() => c.abort(), 20000);
+    try { return await fetch(u, { headers: { "User-Agent": "jarvis/1.0", Accept: "application/json" }, signal: c.signal }).then((r) => r.json()).finally(() => clearTimeout(t)); }
+    catch (e) { clearTimeout(t); if (i === tries - 1) throw e; }
+  }
 }
 
 if (!ADDR) { write({ source: "wallet", title: LABEL, status: "not-configured", tiles: [], note: "WALLET_ADDRESS missing in .env" }); process.exit(0); }
@@ -58,15 +61,15 @@ try {
   for (const x of all) merged[x.sym] = (merged[x.sym] || 0) + x.usd;
   const top = Object.entries(merged).filter(([, u]) => u > 1).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([s, u]) => `${s} ${fmt(u)}`).join(" · ");
 
+  const crypto = Math.max(0, total - stable), stablePct = total ? Math.round((stable / total) * 100) : 0;
   write({
     source: "wallet", title: LABEL, status: "ok",
     tiles: [
-      { label: "Value", value: fmt(total) },
-      { label: "Stablecoin", value: fmt(stable) },
-      { label: "ETH", value: ethTotal.toFixed(3) },
-      { label: "Chains", value: String(chainsWithValue) },
+      { label: "Total", value: fmt(total) },
+      { label: "Stablecoins", value: fmt(stable), delta: stablePct + "% dry powder", dir: "flat" },
+      { label: "In crypto", value: fmt(crypto), delta: ethTotal.toFixed(2) + " ETH", dir: "flat" },
     ],
-    note: top ? "Top: " + top : null,
+    note: top ? "Holdings: " + top + ` · across ${chainsWithValue} chains` : null,
   });
   console.log("wallet:", fmt(total), `across ${chainsWithValue} chains`);
 } catch (e) {
