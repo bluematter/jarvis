@@ -15,6 +15,10 @@ An Iron Man–style HUD that talks to your **local Claude Code** and is aware of
 
 The browser is pure I/O. All the brains live in the bridge + Claude Code. Nothing is exposed beyond localhost.
 
+## Demo
+
+Watch Jarvis in action: voice commands, live metrics, and autonomous work-order execution — all hands-free.
+
 ## Quick start
 
 ```bash
