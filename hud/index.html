@@ -586,10 +586,10 @@ function orderCard(o) {
   const repo = `<span class="krepo">${escape(repoLabel(o.repo))}</span>`;
   const del = `<button class="kx" data-del="${escape(o.id)}" title="Delete">×</button>`; // delete affordance on non-running cards
   if (o.status === "proposed" || o.status === "failed") {
-    return `<div class="kcard ${o.status === "failed" ? "kfail" : ""}">${del}${repo}<div class="ktitle">${escape(o.title)}</div><div class="kbrief">${escape((o.brief || "").slice(0, 200))}</div>${o.status === "failed" ? `<div class="kerr">${escape(o.summary || "failed")}</div>` : ""}<button class="kbtn" data-dispatch="${escape(o.id)}">▶ ${o.status === "failed" ? "Retry" : "Dispatch"}</button></div>`;
+    return `<div class="kcard ${o.status === "failed" ? "kfail" : ""}">${del}${repo}<div class="ktitle">${escape(o.title)}</div><div class="kbrief">${escape((o.brief || "").slice(0, 200))}</div>${o.status === "failed" ? `<div class="kerr">${escape(o.summary || "failed")}</div>` : ""}<div class="krow"><button class="kbtn" data-dispatch="${escape(o.id)}">▶ ${o.status === "failed" ? "Retry" : "Dispatch"}</button><button class="kbtn kghost" data-live="${escape(o.id)}" title="Drive it yourself — interactive Claude in Terminal + Zed">⌨ Live</button></div></div>`;
   }
   if (o.status === "in_progress") {
-    return `<div class="kcard kprog">${repo}<div class="ktitle">${escape(o.title)}</div><div class="kact"><span class="spin"></span>${escape(o.lastActivity || "working…")}</div><div class="kbranch">${escape(o.branch || "")}</div></div>`;
+    return `<div class="kcard kprog">${repo}<div class="ktitle">${escape(o.title)}</div><div class="kact"><span class="spin"></span>${escape(o.lastActivity || "working…")}</div><div class="kbranch">${escape(o.branch || "")}</div>${o.live ? `<button class="kbtn" data-finish="${escape(o.id)}" title="Close the live session and open the PR">✓ Finish → PR</button>` : ""}</div>`;
   }
   const pr = o.prUrl ? `<a class="kbtn kpr" href="${escape(o.prUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">↗ Review PR</a>` : "";
   return `<div class="kcard kdone">${repo}<div class="ktitle">${escape(o.title)}</div><div class="ksum">${escape((o.summary || "").slice(0, 240))}</div><div class="kbranch">↳ ${escape(o.branch || "")}</div>${pr}<div class="krow"><button class="kbtn kghost" data-diff="${escape(o.id)}">view diff</button><button class="kbtn kghost" data-archive="${escape(o.id)}" title="Archive (keep, hide)">⤓ Archive</button></div></div>`;
@@ -598,6 +598,8 @@ const EMPTY = { proposed: "No proposals yet — ask Jarvis to queue work.", in_p
 let colSig = {};
 function wireCol(scope) {
   scope.querySelectorAll("[data-dispatch]").forEach((b) => (b.onclick = () => { ws.send(JSON.stringify({ type: "dispatch", id: b.dataset.dispatch })); b.textContent = "dispatching…"; b.disabled = true; }));
+  scope.querySelectorAll("[data-live]").forEach((b) => (b.onclick = () => { ws.send(JSON.stringify({ type: "go-live", id: b.dataset.live })); b.textContent = "opening…"; b.disabled = true; }));
+  scope.querySelectorAll("[data-finish]").forEach((b) => (b.onclick = () => { ws.send(JSON.stringify({ type: "finish-live", id: b.dataset.finish })); b.textContent = "finishing…"; b.disabled = true; }));
   const pull = (b, type) => { const id = b.dataset.del || b.dataset.archive; b.onclick = (e) => {
     e.stopPropagation();
     allOrders = allOrders.filter((o) => o.id !== id); // optimistic

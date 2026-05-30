@@ -6,7 +6,7 @@
 import { createServer } from "node:http";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { readFileSync, existsSync, readdirSync, appendFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, appendFileSync, writeFileSync, mkdirSync, unlinkSync, symlinkSync } from "node:fs";
 import { join, extname } from "node:path";
 import { WebSocketServer } from "ws";
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -32,6 +32,7 @@ const PORT = Number(env.PORT || 4317);
 const HUB = join(ROOT, env.JARVIS_HUB?.replace(/^\.\//, "") || "hub");
 const MODEL = env.JARVIS_MODEL || undefined;
 const DISPATCH_MODEL = env.JARVIS_DISPATCH_MODEL || "claude-opus-4-8"; // Opus for the actual code work (voice stays on MODEL)
+const ZED = env.JARVIS_ZED || "/Applications/Zed.app/Contents/MacOS/cli"; // for the live escape hatch
 const PERMISSION_MODE = env.JARVIS_PERMISSION_MODE || "bypassPermissions";
 // spoken ack when a turn reaches for tools, so a data-gathering turn isn't dead silence
 const FILLERS = ["Sure, scanning the data now.", "One sec, pulling that up.", "On it — checking the numbers.", "Let me look that up.", "Give me a moment, digging in."];
@@ -271,6 +272,29 @@ function dispatchPolicy(wt, repoPath) {
   };
 }
 
+// shared finish: push the branch, open a PR, mark done, pop the browser (used by autonomous + live)
+async function finalizePR(order, wt, branch, summary) {
+  const ahead = (await git(wt, ["rev-list", "--count", `${order.base}..HEAD`]).catch(() => ({ stdout: "0" }))).stdout.trim();
+  if (!ahead || ahead === "0") {
+    order.status = "done"; order.summary = summary || "No changes were made."; order.lastActivity = null; order.worktree = wt; order.live = false; writeOrder(order);
+    notify(`Jarvis · ${order.repo}`, `${order.title} — no changes made`); return;
+  }
+  order.lastActivity = "opening pull request…"; writeOrder(order);
+  let prUrl = "";
+  try {
+    await git(wt, ["push", "-u", "origin", branch, "--force-with-lease"]);
+    const body = `${order.brief}\n\n---\n**Summary:** ${summary || "(none)"}\n\n_Opened by Jarvis — review before merge._`;
+    const r = await gh(wt, ["pr", "create", "--head", branch, "--title", order.title, "--body", body]);
+    prUrl = (r.stdout || "").trim().split(/\s+/).filter((s) => s.startsWith("http")).pop() || "";
+  } catch (e) {
+    try { prUrl = (await gh(wt, ["pr", "view", branch, "--json", "url", "-q", ".url"])).stdout.trim(); } catch {}
+    if (!prUrl) { order.status = "failed"; order.summary = "committed but the PR step failed: " + String(e?.message || e).slice(0, 200); order.lastActivity = null; order.live = false; writeOrder(order); notify(`Jarvis · ${order.repo}`, `✕ ${order.title} — PR step failed`); return; }
+  }
+  order.status = "done"; order.summary = summary || "Done."; order.prUrl = prUrl; order.lastActivity = null; order.worktree = wt; order.live = false; writeOrder(order);
+  notify(`Jarvis · ${order.repo}`, `✓ ${order.title} — PR ready to review`);
+  if (prUrl) { try { spawn("open", [prUrl], { stdio: "ignore" }).on("error", () => {}); } catch {} }
+}
+
 async function dispatchOrder(id) {
   const order = readOrder(id);
   if (!order || (order.status !== "proposed" && order.status !== "failed")) return;
@@ -297,30 +321,46 @@ async function dispatchOrder(id) {
         }
       } else if (ev.type === "result") out = ev.result || out;
     }
-    const ahead = (await git(wt, ["rev-list", "--count", `${order.base}..HEAD`]).catch(() => ({ stdout: "0" }))).stdout.trim();
-    if (!ahead || ahead === "0") { // agent made no commits — nothing to PR
-      order.status = "done"; order.summary = out.trim() || "No changes were made."; order.lastActivity = null; order.worktree = wt; writeOrder(order);
-      notify(`Jarvis · ${order.repo}`, `${order.title} — no changes made`); return;
-    }
-    // autonomous → PR (the bridge does this; the agent never pushes/merges)
-    order.lastActivity = "opening pull request…"; writeOrder(order);
-    let prUrl = "";
-    try {
-      await git(wt, ["push", "-u", "origin", branch, "--force-with-lease"]);
-      const body = `${order.brief}\n\n---\n**Jarvis agent summary:** ${out.trim() || "(none)"}\n\n_Dispatched autonomously by Jarvis — review before merge._`;
-      const r = await gh(wt, ["pr", "create", "--head", branch, "--title", order.title, "--body", body]);
-      prUrl = (r.stdout || "").trim().split(/\s+/).filter((s) => s.startsWith("http")).pop() || "";
-    } catch (e) {
-      try { prUrl = (await gh(wt, ["pr", "view", branch, "--json", "url", "-q", ".url"])).stdout.trim(); } catch {}
-      if (!prUrl) { order.status = "failed"; order.summary = "code committed but the PR step failed: " + String(e?.message || e).slice(0, 200); order.lastActivity = null; writeOrder(order); notify(`Jarvis · ${order.repo}`, `✕ ${order.title} — PR step failed`); return; }
-    }
-    order.status = "done"; order.summary = out.trim() || "Done."; order.prUrl = prUrl; order.lastActivity = null; order.worktree = wt; writeOrder(order);
-    notify(`Jarvis · ${order.repo}`, `✓ ${order.title} — PR ready to review`);
-    if (prUrl) { try { spawn("open", [prUrl], { stdio: "ignore" }).on("error", () => {}); } catch {} } // pop the PR open for a quick review
+    await finalizePR(order, wt, branch, out.trim() || "Done.");
   } catch (e) {
     order.status = "failed"; order.summary = String(e?.message || e).slice(0, 300); order.lastActivity = null; writeOrder(order);
     notify(`Jarvis · ${order.repo}`, `✕ ${order.title} failed`);
   }
+}
+
+// LIVE escape hatch: open an interactive Claude session in Terminal + Zed on an isolated branch. You
+// drive it (approve every command, run db/deploy yourself) — full access, because you're present.
+async function liveDispatch(id) {
+  const order = readOrder(id);
+  if (!order || (order.status !== "proposed" && order.status !== "failed")) return;
+  const repoPath = join(ROOT, "..", order.repo);
+  if (!existsSync(join(repoPath, ".git"))) { order.status = "failed"; order.summary = "repo not found: " + order.repo; writeOrder(order); return; }
+  const branch = "jarvis/" + order.id;
+  const wt = join(STATE, "wt", String(order.id).replace(/[^a-z0-9_-]/gi, ""));
+  try {
+    try { await git(repoPath, ["worktree", "remove", "--force", wt]); } catch {}
+    try { await git(repoPath, ["branch", "-D", branch]); } catch {}
+    await git(repoPath, ["worktree", "add", "-b", branch, wt, "HEAD"]);
+    order.base = (await git(repoPath, ["rev-parse", "HEAD"])).stdout.trim();
+    for (const f of ["node_modules", ".env"]) { try { if (existsSync(join(repoPath, f)) && !existsSync(join(wt, f))) symlinkSync(join(repoPath, f), join(wt, f)); } catch {} } // deps + env so you can actually run things
+    writeFileSync(join(wt, ".jarvis-brief.txt"), `${order.title}\n\n${order.brief}`);
+    const go = join(wt, ".jarvis-go.sh");
+    writeFileSync(go, `#!/bin/bash\ncd "${wt}" || exit 1\nclear\necho "── Jarvis live · ${order.repo} · ${branch} ──"\necho "Interactive Claude — you approve every command. Commit when done, then click 'Finish → PR' in Jarvis."\necho\nexec claude "$(cat .jarvis-brief.txt)"\n`);
+    order.status = "in_progress"; order.branch = branch; order.live = true; order.worktree = wt; order.lastActivity = "live session — Terminal + Zed open"; order.summary = null; writeOrder(order);
+    spawn("osascript", ["-e", `tell application "Terminal" to do script "bash '${go}'"`, "-e", `tell application "Terminal" to activate`], { stdio: "ignore" }).on("error", () => {});
+    try { spawn(ZED, [wt], { stdio: "ignore" }).on("error", () => {}); } catch {}
+    notify(`Jarvis · ${order.repo}`, `Live session open — Terminal + Zed on ${branch}`);
+  } catch (e) { order.status = "failed"; order.summary = "live launch failed: " + String(e?.message || e).slice(0, 200); order.live = false; writeOrder(order); }
+}
+async function finishLive(id) {
+  const order = readOrder(id);
+  if (!order || order.status !== "in_progress" || !order.live) return;
+  const wt = order.worktree || join(STATE, "wt", String(order.id).replace(/[^a-z0-9_-]/gi, ""));
+  const branch = order.branch || "jarvis/" + order.id;
+  order.lastActivity = "wrapping up the live session…"; writeOrder(order);
+  for (const f of [".jarvis-go.sh", ".jarvis-brief.txt", "node_modules", ".env"]) { try { unlinkSync(join(wt, f)); } catch {} } // drop the scaffolding/symlinks so they don't get committed
+  try { await git(wt, ["add", "-A"]); await git(wt, ["commit", "-m", order.title]); } catch {} // capture anything still uncommitted (no-op if already committed)
+  await finalizePR(order, wt, branch, order.summary || "Completed in a live session.");
 }
 
 // --- websocket bridge ---
@@ -464,6 +504,8 @@ wss.on("connection", (ws) => {
     if (msg.type === "search" && msg.text?.trim()) return runSearch(msg.text);
     if (msg.type === "brief") return runBrief();
     if (msg.type === "dispatch" && msg.id) { dispatchOrder(msg.id); return; } // fire-and-forget; HUD polls /orders
+    if (msg.type === "go-live" && msg.id) { liveDispatch(msg.id); return; }    // escape hatch: interactive Terminal + Zed
+    if (msg.type === "finish-live" && msg.id) { finishLive(msg.id); return; }  // close the live session -> PR
     if (msg.type === "delete-order" && msg.id) { const o = readOrder(msg.id); if (o && (o.status === "proposed" || o.status === "failed")) { try { unlinkSync(orderPath(msg.id)); console.log(`[order] deleted ${msg.id}`); } catch {} } return; } // only proposals are deletable
     if (msg.type === "archive-order" && msg.id) { const o = readOrder(msg.id); if (o && o.status === "done") { o.status = "archived"; writeOrder(o); console.log(`[order] archived ${msg.id}`); } return; } // done -> kept but hidden
   });
