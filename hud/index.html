@@ -78,8 +78,11 @@
   /* stage */
   .stage { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; padding: 0 40px 172px; }
   .stage::before { content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
-    background: repeating-radial-gradient(circle at 50% 44%, transparent 0 44px, rgba(56,225,255,.045) 44px 45px);
-    -webkit-mask: radial-gradient(circle at 50% 44%, #000 6%, transparent 56%); mask: radial-gradient(circle at 50% 44%, #000 6%, transparent 56%); }
+    background:
+      linear-gradient(rgba(56,225,255,.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(56,225,255,.05) 1px, transparent 1px);
+    background-size: 46px 46px, 46px 46px;
+    -webkit-mask: radial-gradient(circle at 50% 41%, #000 6%, transparent 62%); mask: radial-gradient(circle at 50% 41%, #000 6%, transparent 62%); }
   .corner { position: absolute; width: 26px; height: 26px; z-index: 2; pointer-events: none; }
   .corner.tl { top: 76px; left: 30px; border-top: 1.5px solid rgba(56,225,255,.5); border-left: 1.5px solid rgba(56,225,255,.5); }
   .corner.tr { top: 76px; right: 30px; border-top: 1.5px solid rgba(56,225,255,.5); border-right: 1.5px solid rgba(56,225,255,.5); }
