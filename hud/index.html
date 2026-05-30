@@ -277,7 +277,7 @@ function handle(m) {
   if (m.type === "wake-armed") { // bare "Hey Jarvis" heard → keep listening for the command
     mode = "idle"; setState("listening", "Listening…");
     clearTimeout(wakeArmTimer);
-    wakeArmTimer = setTimeout(() => { if (stateEl.textContent === "listening" && mode === "idle") setState("idle", "…"); }, 9000);
+    wakeArmTimer = setTimeout(() => { if (stateEl.textContent === "listening" && mode === "idle") setState("idle", "…"); }, 4500);
     return;
   }
   if (m.type === "voice-ready") { tbVoice.classList.add("on"); setState("idle", "Online. Say the word."); }

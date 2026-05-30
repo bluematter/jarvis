@@ -250,7 +250,7 @@ wss.on("connection", (ws) => {
   let lastSttMs = 0; // STT time of the most recent voice utterance, folded into the turn's timing line
   let pendingGate = "none"; // "wake" = the next utterance must contain the wake word to run (hands-free VAD)
   let awaitingCommand = false, awaitingSince = 0; // a bare "Hey Jarvis" arms a short window: the next burst runs as the command, no wake word needed
-  const FOLLOWUP_MS = 8000;
+  const FOLLOWUP_MS = 4000; // short: a deliberate "Hey Jarvis…<command>" pause, NOT long enough to catch the next sentence of a conversation
   // Whisper labels non-speech as "(clicking)", "[BLANK_AUDIO]", "(typing)"… — strip those so a keyboard tap isn't a "command"
   const speechOnly = (s) => (s || "").replace(/[\(\[][^)\]]*[\)\]]/g, " ").replace(/\s+/g, " ").trim();
   const send = (obj) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(obj));
@@ -422,7 +422,15 @@ wss.on("connection", (ws) => {
         sendAudio(b);
       }).catch(() => {});
   }
-  function pullTTS(T, final) { // pull complete sentences (terminator + following space) out of T.pending
+  function pullTTS(T, final) { // pull speakable chunks out of T.pending as the answer streams
+    // FIRST chunk only: start talking ASAP. Waiting for a whole sentence costs seconds (the period
+    // arrives late AND a long chunk is slow to synthesize), which is dead air. Instead break on the
+    // earliest clause boundary (, ; : . ! ?), or a word boundary once the opening line runs long — a
+    // shorter first chunk synthesizes faster too. Everything after uses normal full-sentence boundaries.
+    if (T.queued === 0 && !final) {
+      const m = /^([\s\S]{14,}?[.!?,;:])\s/.exec(T.pending) || /^([\s\S]{48,}?\S)\s/.exec(T.pending);
+      if (m) { enqueueTTS(T, m[1]); T.pending = T.pending.slice(m[0].length); }
+    }
     let m;
     while ((m = /^([\s\S]*?[.!?]+)\s+/.exec(T.pending))) { enqueueTTS(T, m[1]); T.pending = T.pending.slice(m[0].length); }
     if (final && T.pending.trim()) { enqueueTTS(T, T.pending); T.pending = ""; }
