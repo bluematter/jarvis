@@ -180,6 +180,22 @@
   .kbody { flex: 1; overflow-y: auto; padding: 0 14px 16px; display: flex; flex-direction: column; gap: 10px; }
   .kbody::-webkit-scrollbar { width: 0; }
   .kempty { color: #2f5263; font-size: .76rem; padding: 8px 2px; font-style: italic; }
+  /* Sparks panel */
+  .spark-card { width: min(760px, 94vw); height: min(720px, 86vh); }
+  .board-h em { font-style: normal; font-size: .72rem; color: #4a6675; font-family: var(--mono); letter-spacing: .04em; }
+  .sparkadd { margin: 16px 22px 6px; width: auto; }
+  .sparklist { flex: 1; overflow-y: auto; padding: 8px 22px 22px; display: flex; flex-direction: column; gap: 10px; }
+  .spark { background: rgba(8,18,28,.7); border: 1px solid rgba(56,225,255,.12); border-left: 3px solid rgba(56,225,255,.22); border-radius: 9px; padding: 13px 15px; animation: pop .2s ease; }
+  .spark.today { border-left-color: #ffb454; background: rgba(36,28,12,.4); }
+  .spark.tick { opacity: .6; }
+  .spark .stext { font-size: .92rem; color: #e8f8ff; line-height: 1.45; white-space: pre-wrap; }
+  .spark .smeta { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 11px; }
+  .spark .sage { font-family: var(--mono); font-size: .6rem; color: #5d8294; white-space: nowrap; }
+  .spark .sacts { display: flex; gap: 6px; flex: none; }
+  .sbtn { background: rgba(56,225,255,.08); border: 1px solid rgba(56,225,255,.22); color: #9fcfe0; border-radius: 6px; padding: 4px 9px; font-size: .72rem; cursor: pointer; font-family: var(--font); transition: .12s; white-space: nowrap; }
+  .sbtn:hover { background: rgba(56,225,255,.2); color: #02121a; }
+  .sbtn.on { background: rgba(255,180,84,.22); border-color: #ffb454; color: #ffb454; }
+  .sbtn.sx:hover { background: rgba(255,90,90,.2); border-color: #ff7a7a; color: #ff7a7a; }
   .kcard { position: relative; background: rgba(8,18,28,.8); border: 1px solid rgba(56,225,255,.12); border-radius: 9px; padding: 12px 13px; animation: pop .25s ease; }
   .kcard .kx { position: absolute; top: 6px; right: 7px; width: 20px; height: 20px; line-height: 18px; text-align: center; border-radius: 5px; border: 0; background: transparent; color: #4a6675; font-size: 1.05rem; cursor: pointer; opacity: 0; transition: .15s; }
   .kcard:hover .kx { opacity: 1; }
@@ -240,6 +256,7 @@
         <span class="chip brief" id="boardBtn" title="Work orders (press O)">⊞ Work</span>
         <span class="chip brief" id="wakeBtn" title="Hands-free &quot;Hey Jarvis&quot; (press J)">🎙 Hey-Jarvis</span>
         <span class="chip brief" id="voiceBtn" title="Toggle voice — Daniel ↔ George (press V)">🔊 Daniel</span>
+        <span class="chip brief" id="sparksBtn" title="Idea dumps — triage daily (press I)">💡 Sparks</span>
       </div>
       <div class="clk"><div class="time" id="clkTime">--:--</div><div class="date" id="clkDate"></div></div>
     </div>
@@ -266,6 +283,13 @@
       <div class="kcol"><h3>In Progress</h3><div class="kbody" id="k-in_progress"></div></div>
       <div class="kcol"><h3>Done · Review</h3><div class="kbody" id="k-done"></div></div>
     </div>
+  </div>
+</div>
+<div id="sparks" class="board" hidden>
+  <div class="board-card spark-card">
+    <div class="board-h"><span>💡 Sparks <em>— dump now, triage daily</em></span><a id="sparksClose" title="Close (Esc)">✕</a></div>
+    <input id="sparkInput" class="search sparkadd" placeholder='Dump an idea…  ↵   (or say "Hey Jarvis, idea: …")' autocomplete="off" />
+    <div class="sparklist" id="sparklist"></div>
   </div>
 </div>
 <div id="toasts" class="toasts"></div>
@@ -594,6 +618,52 @@ $("boardClose").onclick = closeBoard;
 addEventListener("keydown", (e) => {
   if ((e.key === "o" || e.key === "O") && !typing(e)) { e.preventDefault(); board.hidden ? openBoard() : closeBoard(); }
   else if (e.key === "Escape" && !board.hidden) closeBoard();
+});
+
+// ---------- Sparks: idea dumps you triage daily ----------
+const sparks = $("sparks"), sparksBtn = $("sparksBtn"), sparkInput = $("sparkInput"), sparklist = $("sparklist");
+let sparkPoll = null, allSparks = [];
+function sparkCard(s) {
+  const tick = s.status === "ticketed";
+  return `<div class="spark ${s.today ? "today" : ""} ${tick ? "tick" : ""}">
+    <div class="stext">${escape(s.text)}</div>
+    <div class="smeta"><span class="sage">${ago(s.created)}${tick ? " · ticketed" : ""}</span>
+      <span class="sacts">
+        <button class="sbtn ${s.today ? "on" : ""}" data-today="${escape(s.id)}" title="Flag as today's priority">★ Today</button>
+        <button class="sbtn" data-ticket="${escape(s.id)}" title="Turn into a work-order">→ Ticket</button>
+        <button class="sbtn" data-donesp="${escape(s.id)}" title="Shelve (done)">✓</button>
+        <button class="sbtn sx" data-delsp="${escape(s.id)}" title="Delete">×</button>
+      </span></div></div>`;
+}
+function renderSparks() {
+  const open = allSparks.filter((s) => s.status !== "done")
+    .sort((a, b) => (b.today ? 1 : 0) - (a.today ? 1 : 0) || String(b.created).localeCompare(String(a.created)));
+  sparklist.innerHTML = open.map(sparkCard).join("") || `<div class="kempty">No sparks yet — dump one above, or say "Hey Jarvis, idea: …"</div>`;
+  wireSparks();
+}
+function wireSparks() {
+  sparklist.querySelectorAll("[data-today]").forEach((b) => (b.onclick = () => sparkSet(b.dataset.today, { today: !allSparks.find((s) => s.id === b.dataset.today)?.today })));
+  sparklist.querySelectorAll("[data-donesp]").forEach((b) => (b.onclick = () => { sparkSet(b.dataset.donesp, { status: "done" }); }));
+  sparklist.querySelectorAll("[data-delsp]").forEach((b) => (b.onclick = () => { allSparks = allSparks.filter((s) => s.id !== b.dataset.delsp); if (wsReady) ws.send(JSON.stringify({ type: "spark-del", id: b.dataset.delsp })); renderSparks(); }));
+  sparklist.querySelectorAll("[data-ticket]").forEach((b) => (b.onclick = () => {
+    const repo = prompt("Which repo? (wireflow · gluely-app · eatiq · rizz · basedlabs-hub — or leave blank)") ?? "";
+    if (wsReady) ws.send(JSON.stringify({ type: "spark-ticket", id: b.dataset.ticket, repo: repo.trim() }));
+    setTimeout(refreshSparks, 200);
+  }));
+}
+function sparkSet(id, patch) { const s = allSparks.find((x) => x.id === id); if (s) Object.assign(s, patch); if (wsReady) ws.send(JSON.stringify({ type: "spark-set", id, patch })); renderSparks(); }
+async function refreshSparks() { try { allSparks = await (await fetch("/sparks", { cache: "no-store" })).json(); } catch { return; } renderSparks(); }
+function openSparks() { sparks.hidden = false; refreshSparks(); sparkPoll = setInterval(refreshSparks, 2500); setTimeout(() => sparkInput.focus(), 60); }
+function closeSparks() { sparks.hidden = true; if (sparkPoll) { clearInterval(sparkPoll); sparkPoll = null; } }
+sparksBtn.onclick = () => (sparks.hidden ? openSparks() : closeSparks());
+$("sparksClose").onclick = closeSparks;
+sparkInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && sparkInput.value.trim()) { if (wsReady) ws.send(JSON.stringify({ type: "spark-add", text: sparkInput.value.trim() })); sparkInput.value = ""; setTimeout(refreshSparks, 180); }
+  else if (e.key === "Escape") { e.preventDefault(); closeSparks(); }
+});
+addEventListener("keydown", (e) => {
+  if ((e.key === "i" || e.key === "I") && !typing(e)) { e.preventDefault(); sparks.hidden ? openSparks() : closeSparks(); }
+  else if (e.key === "Escape" && !sparks.hidden) closeSparks();
 });
 const REPO_LABEL = { wireflow: "Wireflow", "gluely-app": "Gluely", eatiq: "BasedHealth", "eatiq-mobile": "BasedHealth", rizz: "Rizzly", "basedlabs-hub": "BasedLabs" };
 const MAIN_PROJECTS = ["wireflow", "gluely-app", "eatiq", "rizz", "basedlabs-hub"]; // always-shown focus filters

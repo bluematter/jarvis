@@ -77,6 +77,11 @@ const httpServer = createServer(async (req, res) => {
     res.end(JSON.stringify(readState()));
     return;
   }
+  if (req.url.split("?")[0] === "/sparks") {
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify(readSparks()));
+    return;
+  }
   if (req.url.split("?")[0] === "/orders") {
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
     res.end(JSON.stringify(listOrders()));
@@ -122,7 +127,7 @@ const briefPrompt = () => {
     : h < 17 ? "It is the afternoon — open with 'Good afternoon, sir.'"
     : h < 22 ? "It is the evening — open with 'Good evening, sir.'"
     : "It is late at night — do NOT say 'good morning'; open with a wry nod to the late hour, e.g. 'Up late, sir.'";
-  return `Give me a SPOKEN briefing in 3-4 natural sentences. ${greet} Read metrics/_digest.md (ONE file — revenue + fleet; do not run live queries). Lead with the revenue headline across Gluely, BasedHealth and Wireflow with the actual numbers. Then call out anything that looks OFF — a product with paying subscribers but ZERO trials (a broken trial funnel), trials piling up without converting, or a project with uncommitted work sitting for days. Close with the single most important thing to focus on today. Be a sharp COO: specific and numbers-driven, address me as "sir" once, no lists, no markdown — you're speaking to me.`;
+  return `Give me a SPOKEN briefing in 3-4 natural sentences. ${greet} Read metrics/_digest.md (ONE file — revenue + fleet; do not run live queries). Lead with the revenue headline across Gluely, BasedHealth and Wireflow with the actual numbers. Then call out anything that looks OFF — a product with paying subscribers but ZERO trials (a broken trial funnel), trials piling up without converting, or a project with uncommitted work sitting for days. Close with the single most important thing to focus on today. Then, if state/sparks.json exists, glance at it (my idea inbox) — if any spark has "today": true, mention that one as an idea I flagged to prioritize. Be a sharp COO: specific and numbers-driven, address me as "sir" once, no lists, no markdown — you're speaking to me.`;
 };
 
 // ---------- proactive alerts: surface things WITHOUT being asked ----------
@@ -214,6 +219,27 @@ const listOrders = () => {
       .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
   } catch { return []; }
 };
+
+// ---------- Sparks: quick idea dumps you triage daily (capture without committing to build) ----------
+const SPARKS_FILE = join(STATE, "sparks.json");
+const readSparks = () => readJSON(SPARKS_FILE, []) || [];
+const writeSparks = (l) => { try { writeFileSync(SPARKS_FILE, JSON.stringify(l, null, 2)); } catch {} };
+function addSpark(text) {
+  text = String(text || "").trim(); if (!text) return null;
+  const l = readSparks();
+  const s = { id: "sp-" + Math.random().toString(36).slice(2, 9), text, today: false, status: "open", created: new Date().toISOString() };
+  l.unshift(s); writeSparks(l); return s;
+}
+const updateSpark = (id, patch) => { const l = readSparks(); const s = l.find((x) => x.id === id); if (s) { Object.assign(s, patch); writeSparks(l); } };
+const delSpark = (id) => writeSparks(readSparks().filter((x) => x.id !== id));
+function sparkToOrder(id, repo) { // promote a spark into a proposed work-order on the board
+  const s = readSparks().find((x) => x.id === id); if (!s) return;
+  const title = (s.text.split(/[.\n]/)[0] || "Idea").slice(0, 80).trim();
+  const oid = "spark-" + Date.now().toString(36);
+  writeOrder({ id: oid, repo: (repo || "").trim(), title, brief: s.text, status: "proposed", createdAt: new Date().toISOString(), fromSpark: id });
+  updateSpark(id, { status: "ticketed" });
+  broadcast({ type: "toast", title: "Spark → ticket", body: title });
+}
 
 function dispatchPrompt(order, branch) {
   return `You are executing a work-order dispatched by Jarvis.
@@ -554,6 +580,10 @@ wss.on("connection", (ws) => {
     if (msg.type === "prompt" && msg.text?.trim()) return runTurn(msg.text);
     if (msg.type === "search" && msg.text?.trim()) return runSearch(msg.text);
     if (msg.type === "brief") return runBrief();
+    if (msg.type === "spark-add" && msg.text) { addSpark(msg.text); return; }
+    if (msg.type === "spark-set" && msg.id) { updateSpark(msg.id, msg.patch || {}); return; }
+    if (msg.type === "spark-del" && msg.id) { delSpark(msg.id); return; }
+    if (msg.type === "spark-ticket" && msg.id) { sparkToOrder(msg.id, msg.repo); return; }
     if (msg.type === "dispatch" && msg.id) { dispatchOrder(msg.id); return; } // fire-and-forget; HUD polls /orders
     if (msg.type === "go-live" && msg.id) { liveDispatch(msg.id); return; }    // escape hatch: interactive Terminal + Zed
     if (msg.type === "finish-live" && msg.id) { finishLive(msg.id); return; }  // close the live session -> PR
@@ -726,7 +756,23 @@ wss.on("connection", (ws) => {
     await wait;
   }
 
-  const runTurn = (prompt) => speakTurn(prompt, prompt);
+  async function say(text) { // speak a short line without a full LLM turn
+    send({ type: "speak-start" });
+    try { const b = await synth(text); if (b) sendAudio(b); } catch {}
+    send({ type: "speak-end" });
+  }
+  const SPARK_RE = /^\s*(?:spark|idea|new idea|note to self|note:|remember (?:this|that|to)|don'?t forget(?: to)?)\b[:,\-\s]*(.+)/is;
+  const runTurn = (prompt) => {
+    const m = SPARK_RE.exec(prompt);
+    if (m && m[1].trim().length > 2) { // it's an idea dump, not a command
+      addSpark(m[1].trim());
+      send({ type: "transcript", text: prompt });
+      send({ type: "result", text: "Logged that spark, sir." });
+      broadcast({ type: "toast", title: "💡 Spark saved", body: m[1].trim().slice(0, 90) });
+      return say("Logged, sir.");
+    }
+    return speakTurn(prompt, prompt);
+  };
   const runBrief = () => { markBriefed(); return speakTurn("☼ Briefing", briefPrompt()); };
 
   ws.on("close", () => { try { convo?.q?.close?.(); } catch {} convo = null; currentTurn = null; });
