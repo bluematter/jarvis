@@ -250,7 +250,7 @@ wss.on("connection", (ws) => {
   let lastSttMs = 0; // STT time of the most recent voice utterance, folded into the turn's timing line
   let pendingGate = "none"; // "wake" = the next utterance must contain the wake word to run (hands-free VAD)
   let awaitingCommand = false, awaitingSince = 0; // a bare "Hey Jarvis" arms a short window: the next burst runs as the command, no wake word needed
-  const FOLLOWUP_MS = 4000; // short: a deliberate "Hey Jarvis…<command>" pause, NOT long enough to catch the next sentence of a conversation
+  const FOLLOWUP_MS = 6000; // window after a bare "Hey Jarvis" to speak the command (the flare cues you to go) — long enough for a camera pause, short enough to mostly avoid catching the next conversational sentence
   // Whisper labels non-speech as "(clicking)", "[BLANK_AUDIO]", "(typing)"… — strip those so a keyboard tap isn't a "command"
   const speechOnly = (s) => (s || "").replace(/[\(\[][^)\]]*[\)\]]/g, " ").replace(/\s+/g, " ").trim();
   const send = (obj) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(obj));
