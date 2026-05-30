@@ -17,7 +17,7 @@ export function warmVoice(opts = {}) {
   const {
     sttModel = "onnx-community/whisper-base.en",
     ttsModel = "onnx-community/Kokoro-82M-v1.0-ONNX",
-    dtype = "q8",
+    dtype = "fp16", // fp16 ~halves first-sentence synth vs q8 on Apple Silicon (measured), valid audio
     voice: v = "bm_george",
     speed: sp = 1.12,
     log = () => {},
