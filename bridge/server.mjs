@@ -219,6 +219,31 @@ function notify(title, body) {
   try { spawn("osascript", ["-e", `display notification ${JSON.stringify(body)} with title ${JSON.stringify(title)}`], { stdio: "ignore" }).on("error", () => {}); } catch {}
 }
 
+// Fuzzy "Hey Jarvis" detector — base.en Whisper mangles "Jarvis" (adjargos, jervis, charvis, javis…).
+// Returns { hit, command }; command = the words after the wake token ("" for a bare "Hey Jarvis").
+function lev(a, b) {
+  const m = a.length, n = b.length, d = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
+  for (let j = 1; j <= n; j++) d[0][j] = j;
+  for (let i = 1; i <= m; i++) for (let j = 1; j <= n; j++)
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return d[m][n];
+}
+function isJarvisTok(t) {
+  t = t.toLowerCase().replace(/[^a-z]/g, "").replace(/^ad(?=[jg])/, ""); // "adjargos" -> "jargos"
+  if (t.length < 4) return false;
+  if (t.startsWith("jarv") || t.startsWith("jerv")) return true;        // jarvis, jarvi, jervis
+  return /^[jgch]/.test(t) && t.endsWith("s") && lev(t, "jarvis") <= 2;  // charvis, garvis, jargos
+}
+function parseWake(text) {
+  const toks = text.split(/\s+/).filter(Boolean);
+  for (let i = 0; i < toks.length; i++)
+    if (isJarvisTok(toks[i]))
+      return { hit: true, command: toks.slice(i + 1).join(" ").replace(/^[\s,.:!?'’-]+/, "").trim() };
+  return { hit: false, command: "" };
+}
+// phrases Whisper hallucinates on silence/noise — never run these as a follow-up command
+const NOISE = /^(thank you|thanks( for watching)?|mm-?hmm|uh-?huh|yeah|yes|no|you|bye|okay|ok|so|hmm|hi|hey|the|a|please)[.!?…]*$/i;
+
 wss.on("connection", (ws) => {
   let sessionId = lastSession; // resume the last conversation across HUD refreshes
   let busy = false;
@@ -253,22 +278,21 @@ wss.on("connection", (ws) => {
       lastSttMs = Date.now() - stStt;
       if (gate === "wake") { // hands-free: only act when addressed to Jarvis
         const speech = speechOnly(text);
-        const hasWake = /\bjarvis\b/i.test(speech);
+        const { hit, command } = parseWake(speech);
         const inWindow = awaitingCommand && Date.now() - awaitingSince < FOLLOWUP_MS;
-        if (hasWake) {
-          const cmd = speech.replace(/^.*?\bjarvis\b['’s]*[\s,.:!?-]*/i, "").trim();
-          if (cmd) { // "Hey Jarvis, what's revenue" — wake + command in one breath
+        if (hit) {
+          if (command) { // "Hey Jarvis, what's revenue" — wake + command in one breath
             awaitingCommand = false;
-            console.log(`[wake] RUN "${cmd}"`);
-            send({ type: "transcript", text: cmd });
-            return runTurn(cmd);
+            console.log(`[wake] RUN "${command}"`);
+            send({ type: "transcript", text: command });
+            return runTurn(command);
           }
           // bare "Hey Jarvis" — arm the follow-up window and tell the HUD to keep listening
           awaitingCommand = true; awaitingSince = Date.now();
           console.log(`[wake] armed — awaiting command`);
           return send({ type: "wake-armed" });
         }
-        if (inWindow && speech) { // the command that followed a bare "Hey Jarvis" (the pause split it into two bursts)
+        if (inWindow && speech && !NOISE.test(speech)) { // the command after a bare "Hey Jarvis" (the pause split it in two)
           awaitingCommand = false;
           console.log(`[wake] RUN (follow-up) "${speech}"`);
           send({ type: "transcript", text: speech });
