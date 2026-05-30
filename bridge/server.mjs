@@ -11,7 +11,7 @@ import { join, extname } from "node:path";
 import { WebSocketServer } from "ws";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { ROOT } from "./env.mjs"; // loads .env into process.env (must be first)
-import { warmVoice, transcribe, synth } from "./voice.mjs";
+import { warmVoice, transcribe, synth, setVoice, currentVoice } from "./voice.mjs";
 
 const HUD_DIR = join(ROOT, "hud");
 const env = process.env;
@@ -260,7 +260,7 @@ wss.on("connection", (ws) => {
   send({ type: "history", items: recentTurns(30) }); // replay so the feed isn't blank on reload
   send({ type: "brief-due", due: briefDate() !== todayStr() }); // first open of the day → auto-briefing
   ensureMemWorker(); // revive the claude-mem worker if it died (avoids the +10s hook stall)
-  warmVoice().then(() => send({ type: "voice-ready" })).catch(() => {});
+  warmVoice().then(() => send({ type: "voice-ready", voice: currentVoice() })).catch(() => {});
 
   ws.on("message", async (data, isBinary) => {
     // binary frame = recorded utterance (Float32 PCM @16k) -> transcribe -> run
@@ -310,6 +310,7 @@ wss.on("connection", (ws) => {
     let msg;
     try { msg = JSON.parse(data.toString()); } catch { return; }
     if (msg.type === "utterance") { pendingGate = msg.gate === "wake" ? "wake" : "none"; return; } // tags the next binary frame
+    if (msg.type === "voice" && msg.name) { if (setVoice(msg.name)) console.log(`[voice] -> ${msg.name}`); return; }
     if (msg.type === "prompt" && msg.text?.trim()) return runTurn(msg.text);
     if (msg.type === "search" && msg.text?.trim()) return runSearch(msg.text);
     if (msg.type === "brief") return runBrief();

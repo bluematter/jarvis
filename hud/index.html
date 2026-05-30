@@ -214,6 +214,7 @@
         <span class="chip brief" id="brief" title="Morning briefing (press B)">◐ Brief</span>
         <span class="chip brief" id="boardBtn" title="Work orders (press O)">⊞ Work</span>
         <span class="chip brief" id="wakeBtn" title="Hands-free &quot;Hey Jarvis&quot; (press J)">🎙 Hey-Jarvis</span>
+        <span class="chip brief" id="voiceBtn" title="Toggle voice — Daniel ↔ George (press V)">🔊 Daniel</span>
       </div>
       <div class="clk"><div class="time" id="clkTime">--:--</div><div class="date" id="clkDate"></div></div>
     </div>
@@ -267,7 +268,7 @@ function connect() {
   try {
     ws = new WebSocket(`ws://${location.host}`);
     ws.binaryType = "arraybuffer";
-    ws.onopen = () => { wsReady = true; conn.classList.add("on"); tbBridge.classList.add("on"); setState("idle", "Online. Warming voice…"); };
+    ws.onopen = () => { wsReady = true; conn.classList.add("on"); tbBridge.classList.add("on"); setState("idle", "Online. Warming voice…"); const vv = localStorage.getItem("jarvisVoice"); if (vv) ws.send(JSON.stringify({ type: "voice", name: vv })); };
     ws.onclose = () => { wsReady = false; conn.classList.remove("on"); tbBridge.classList.remove("on"); tbVoice.classList.remove("on"); setState("offline", "Bridge lost. Reconnecting…"); setTimeout(connect, 1500); };
     ws.onmessage = (e) => { if (typeof e.data === "string") handle(JSON.parse(e.data)); else enqueueAudio(e.data); };
   } catch (err) { setState("offline", "Bridge lost. Reconnecting…"); setTimeout(connect, 1500); }
@@ -510,6 +511,20 @@ function setWake(on) {
 wakeBtn.onclick = () => setWake(!WAKE_MODE);
 addEventListener("keydown", (e) => { if ((e.key === "j" || e.key === "J") && !typing(e)) { e.preventDefault(); setWake(!WAKE_MODE); } });
 setWake(WAKE_MODE); // reflect the persisted setting in the chip
+
+// ---------- voice toggle (Daniel ↔ George) ----------
+const VLABEL = { bm_daniel: "Daniel", bm_george: "George" };
+let curVoice = localStorage.getItem("jarvisVoice") || "bm_daniel";
+const voiceBtn = $("voiceBtn");
+function applyVoice(v, push) {
+  if (!VLABEL[v]) v = "bm_daniel";
+  curVoice = v; try { localStorage.setItem("jarvisVoice", v); } catch {}
+  voiceBtn.textContent = "🔊 " + VLABEL[v];
+  if (push && wsReady) ws.send(JSON.stringify({ type: "voice", name: v }));
+}
+voiceBtn.onclick = () => applyVoice(curVoice === "bm_daniel" ? "bm_george" : "bm_daniel", true);
+addEventListener("keydown", (e) => { if ((e.key === "v" || e.key === "V") && !typing(e)) { e.preventDefault(); voiceBtn.onclick(); } });
+applyVoice(curVoice, false); // set the chip label from the saved choice
 
 // ---------- work-order board (propose → approve → dispatch) ----------
 const board = $("board"), boardBtn = $("boardBtn");

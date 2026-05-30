@@ -34,6 +34,11 @@ export function warmVoice(opts = {}) {
   return readyPromise;
 }
 
+// switch the spoken voice live (Kokoro takes the voice per-generate, so no reload needed)
+const VOICES = new Set(["bm_george", "bm_daniel", "bm_fable", "bm_lewis", "am_michael", "am_adam"]);
+export function setVoice(name) { if (VOICES.has(name)) { voice = name; return true; } return false; }
+export function currentVoice() { return voice; }
+
 // audio: Float32Array mono @ 16 kHz, samples in [-1, 1]
 export async function transcribe(audio) {
   await warmVoice();
