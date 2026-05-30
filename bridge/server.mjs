@@ -429,14 +429,17 @@ async function liveDispatch(id) {
     if (!dirty) { branch = "jarvis/" + order.id; try { await git(repoPath, ["checkout", "-B", branch]); } catch {} } // clean tree -> a fresh branch for a clean PR
     order.base = (await git(repoPath, ["rev-parse", "HEAD"])).stdout.trim();
     const dir = join(STATE, "live", String(order.id).replace(/[^a-z0-9_-]/gi, "")); mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "brief.txt"), `${order.title}\n\n${order.brief}`);
-    const go = join(dir, "go.sh");
-    writeFileSync(go, `#!/bin/bash\ncd "${repoPath}" || exit 1\nclear\necho "── Jarvis live · ${order.repo} · ${branch} — your real checkout, the simulator will hot-reload ──"\necho "Interactive Claude — you approve every command. Commit when done, then click 'Finish → PR' in Jarvis."\necho\nexec claude "$(cat '${join(dir, "brief.txt")}')"\n`);
-    order.status = "in_progress"; order.branch = branch; order.live = true; order.inPlace = true; order.repoPath = repoPath; order.lastActivity = `live in your ${order.repo} checkout — simulator hot-reloads`; order.summary = null; writeOrder(order);
-    spawn("osascript", ["-e", `tell application "Terminal" to do script "bash '${go}'"`, "-e", `tell application "Terminal" to activate`], { stdio: "ignore" }).on("error", () => {});
-    try { spawn(ZED, [repoPath], { stdio: "ignore" }).on("error", () => {}); } catch {}
-    notify(`Jarvis · ${order.repo}`, dirty ? `Live on your current branch (${branch}) — you had uncommitted changes` : `Live — editing ${order.repo}; your simulator will hot-reload`);
+    const briefPath = join(dir, "brief.txt");
+    writeFileSync(briefPath, `${order.title}\n\n${order.brief}`);
+    // launch interactive Claude IN your real checkout, as a tab INSIDE Jarvis (no external Terminal/Zed).
+    // Read the brief via $(cat) so its content is never re-parsed by the shell (safe with $, backticks, etc).
+    const s = termSpawn({ cwd: repoPath, project: order.repo, label: `${order.repo} · live`, cmd: `claude "$(cat '${briefPath}')"` });
+    if (!s) { order.status = "failed"; order.summary = "couldn't open the live terminal"; order.live = false; writeOrder(order); return null; }
+    order.status = "in_progress"; order.branch = branch; order.live = true; order.inPlace = true; order.repoPath = repoPath; order.termId = s.id; order.lastActivity = `live in a Jarvis terminal · ${order.repo} (${branch}) — simulator hot-reloads`; order.summary = null; writeOrder(order);
+    notify(`Jarvis · ${order.repo}`, dirty ? `Live on ${branch} (you had uncommitted changes) — terminal tab is open` : `Live — editing ${order.repo} in a Jarvis tab; simulator hot-reloads`);
+    return s.id;
   } catch (e) { order.status = "failed"; order.summary = "live launch failed: " + String(e?.message || e).slice(0, 200); order.live = false; writeOrder(order); }
+  return null;
 }
 async function finishLive(id) {
   const order = readOrder(id);
@@ -444,6 +447,7 @@ async function finishLive(id) {
   const repoPath = order.repoPath || join(ROOT, "..", order.repo);
   const branch = order.branch || "jarvis/" + order.id;
   order.lastActivity = "wrapping up the live session…"; writeOrder(order);
+  if (order.termId) termKill(order.termId); // close the live terminal tab — its job is done
   try { await git(repoPath, ["add", "-A"]); await git(repoPath, ["commit", "-m", order.title]); } catch {} // capture anything still uncommitted
   if (branch.startsWith("jarvis/")) await finalizePR(order, repoPath, branch, order.summary || "Completed in a live session.");
   else { order.status = "done"; order.summary = `Committed on ${branch}. Push & PR from there when ready.`; order.lastActivity = null; writeOrder(order); notify(`Jarvis · ${order.repo}`, `${order.title} — committed on ${branch}`); }
@@ -513,6 +517,9 @@ function notify(title, body) {
   broadcast({ type: "toast", title, body });
   try { spawn("osascript", ["-e", `display notification ${JSON.stringify(body)} with title ${JSON.stringify(title)}`], { stdio: "ignore" }).on("error", () => {}); } catch {}
 }
+// proactive voice: synth a short line once and send the audio to every open HUD tab (serialized so Kokoro isn't reentered)
+let sayChain = Promise.resolve();
+const broadcastSay = (text) => (sayChain = sayChain.then(async () => { try { const b = await synth(text); if (b) for (const c of wss.clients) if (c.readyState === 1) c.send(b, { binary: true }); } catch {} }));
 
 // ---------- terminal sessions: real PTYs streamed to xterm.js in the HUD ----------
 // Sessions live HERE in the long-lived bridge, so they survive HUD refreshes — the browser is just a
@@ -524,8 +531,26 @@ let termSeq = 0;
 const termMeta = (s) => ({ id: s.id, label: s.label, project: s.project, cwd: s.cwd, cols: s.cols, rows: s.rows, status: s.status, exited: s.exited, createdAt: s.createdAt });
 const termList = () => [...termSessions.values()].map(termMeta);
 const broadcastTerms = () => broadcast({ type: "term-list", sessions: termList() });
-function termSpawn({ project = "", cmd = "", label = "", cols = 100, rows = 30 } = {}) {
-  const cwd = project && TERM_PROJECTS.includes(project) ? join(ROOT, "..", project) : join(ROOT, "..");
+// Conductor: tell whether a session is RUNNING, IDLE (at its prompt), or WAITING ON YOU (an approval box).
+// Claude's permission prompt shows a "❯ 1. Yes" selector under a "Do you want to…" line; a (y/n) is the
+// generic case. We only fire when output has gone quiet AND the tail looks like one of those.
+const WAITING_RE = /❯\s*1\.|\(y\/n\)|\[y\/n\]/i; // claude's "❯ 1. Yes" approval selector, or a generic y/n prompt
+const stripAnsi = (s) => s.replace(/\x1b\][^\x07]*\x07/g, "").replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x08\x0b-\x1f]/g, "");
+function termIdleCheck(s) {
+  if (s.exited) return;
+  const next = WAITING_RE.test(stripAnsi(s.sinceActive || "")) ? "waiting" : "idle"; // scan only THIS burst's output, not stale screen history
+  if (next !== s.status) {
+    s.status = next; broadcastTerms();
+    if (next === "waiting" && !s.nudged) { s.nudged = true; termNudge(s); }
+  }
+}
+function termNudge(s) {
+  const what = s.project || String(s.label).replace(/ ·.*/, "");
+  notify("⏸ Session needs you", `${s.label} is waiting on your approval`);
+  broadcastSay(`Sir, the ${what} session is waiting on you.`);
+}
+function termSpawn({ project = "", cmd = "", label = "", cols = 100, rows = 30, cwd = "" } = {}) {
+  cwd = cwd || (project && TERM_PROJECTS.includes(project) ? join(ROOT, "..", project) : join(ROOT, ".."));
   if (!existsSync(cwd)) return null;
   const id = "t" + (++termSeq).toString(36) + Date.now().toString(36).slice(-3);
   const shell = process.env.SHELL || "/bin/zsh";
@@ -533,21 +558,24 @@ function termSpawn({ project = "", cmd = "", label = "", cols = 100, rows = 30 }
   const env = { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor", LANG: process.env.LANG || "en_US.UTF-8" };
   for (const k of ENV_KEYS) delete env[k]; // don't leak Jarvis's .env secrets into the interactive shell (the login shell loads your own)
   let p; try { p = pty.spawn(shell, args, { name: "xterm-256color", cols, rows, cwd, env }); } catch (e) { console.log("[term] spawn failed:", e?.message || e); return null; }
-  const s = { id, label: label || project || "shell", project, cwd, pty: p, buffer: "", outbuf: "", flush: null, cols, rows, status: "running", exited: false, createdAt: new Date().toISOString() };
+  const s = { id, label: label || project || "shell", project, cwd, pty: p, buffer: "", outbuf: "", sinceActive: "", flush: null, idle: null, nudged: false, cols, rows, status: "running", exited: false, createdAt: new Date().toISOString() };
   termSessions.set(id, s);
   p.onData((d) => { // coalesce bursts (a TUI redraw is many small chunks) into one ~12ms frame — smoother + far less WS chatter
     if (s.exited) return;
     s.buffer = (s.buffer + d).slice(-TERM_SCROLLBACK); s.outbuf += d;
+    if (s.status !== "running") { s.status = "running"; s.nudged = false; s.sinceActive = ""; broadcastTerms(); } // active again → fresh burst, clear any "needs you"
+    s.sinceActive = (s.sinceActive + d).slice(-4000); // only this burst's output is scanned for an approval prompt
+    clearTimeout(s.idle); s.idle = setTimeout(() => termIdleCheck(s), 900); // when output goes quiet, decide idle vs waiting-on-you
     if (!s.flush) s.flush = setTimeout(() => { const data = s.outbuf; s.outbuf = ""; s.flush = null; if (data) broadcast({ type: "term-data", id, data }); }, 12);
   });
-  p.onExit(({ exitCode }) => { s.status = "exited"; s.exited = true; if (s.flush) { clearTimeout(s.flush); s.flush = null; } if (s.outbuf) { broadcast({ type: "term-data", id, data: s.outbuf }); s.outbuf = ""; } broadcast({ type: "term-exit", id, code: exitCode }); broadcastTerms(); });
+  p.onExit(({ exitCode }) => { s.status = "exited"; s.exited = true; if (s.flush) { clearTimeout(s.flush); s.flush = null; } if (s.idle) clearTimeout(s.idle); if (s.outbuf) { broadcast({ type: "term-data", id, data: s.outbuf }); s.outbuf = ""; } broadcast({ type: "term-exit", id, code: exitCode }); broadcastTerms(); });
   console.log(`[term] spawned ${id} (${s.label}) in ${cwd}${cmd ? " · " + cmd : ""}`);
   broadcastTerms();
   return s;
 }
 const termWrite = (id, data) => { const s = termSessions.get(id); if (s && !s.exited && typeof data === "string" && data.length <= 100000) s.pty.write(data); };
 const termResize = (id, cols, rows) => { const s = termSessions.get(id); if (s && !s.exited && cols > 0 && rows > 0) { s.cols = cols; s.rows = rows; try { s.pty.resize(cols, rows); } catch {} } };
-const termKill = (id) => { const s = termSessions.get(id); if (!s) return; if (s.flush) { clearTimeout(s.flush); s.flush = null; } try { s.pty.kill(); } catch {} termSessions.delete(id); console.log(`[term] killed ${id}`); broadcastTerms(); };
+const termKill = (id) => { const s = termSessions.get(id); if (!s) return; if (s.flush) { clearTimeout(s.flush); s.flush = null; } if (s.idle) clearTimeout(s.idle); try { s.pty.kill(); } catch {} termSessions.delete(id); console.log(`[term] killed ${id}`); broadcastTerms(); };
 
 // Fuzzy "Hey Jarvis" detector — base.en Whisper mangles "Jarvis" (adjargos, jervis, charvis, javis…).
 // Returns { hit, command }; command = the words after the wake token ("" for a bare "Hey Jarvis").
@@ -696,7 +724,7 @@ wss.on("connection", (ws) => {
     if (msg.type === "term-kill" && msg.id) { termKill(msg.id); return; }
     if (msg.type === "term-list") { send({ type: "term-list", sessions: termList() }); return; }
     if (msg.type === "dispatch" && msg.id) { dispatchOrder(msg.id); return; } // fire-and-forget; HUD polls /orders
-    if (msg.type === "go-live" && msg.id) { liveDispatch(msg.id); return; }    // escape hatch: interactive Terminal + Zed
+    if (msg.type === "go-live" && msg.id) { liveDispatch(msg.id).then((sid) => { if (sid) send({ type: "open-term", id: sid }); }); return; } // opens an in-HUD terminal tab
     if (msg.type === "finish-live" && msg.id) { finishLive(msg.id); return; }  // close the live session -> PR
     if (msg.type === "merge-order" && msg.id) { mergeOrder(msg.id); return; }  // merge the PR + sync local main
     if (msg.type === "delete-order" && msg.id) { const o = readOrder(msg.id); if (o && (o.status === "proposed" || o.status === "failed")) { try { unlinkSync(orderPath(msg.id)); console.log(`[order] deleted ${msg.id}`); } catch {} } return; } // only proposals are deletable
