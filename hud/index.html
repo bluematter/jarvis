@@ -275,8 +275,8 @@ function connect() {
 }
 let streamed = "", wakeArmTimer = null;
 function handle(m) {
-  if (m.type === "wake-fire") { wakeFlare(); beginCommand(); return; } // openWakeWord heard "Hey Jarvis" → flare + capture the command
-  if (m.type === "endpoint") { endCommand(); return; } // Silero VAD (bridge) decided the command is finished
+  if (m.type === "wake-fire") { stopPlayback(); wakeFlare(); armedListening = true; mode = "idle"; setState("listening", "Listening…"); return; } // bridge captures + endpoints the command
+  if (m.type === "endpoint") { armedListening = false; return; } // bridge finished capturing; transcript/thinking follows
   if (m.type === "wake") { wakeFlare(); return; } // (legacy) "Hey Jarvis <command>" in one breath — acknowledge, the turn follows
   if (m.type === "wake-armed") { // bare "Hey Jarvis" — flare, then stay visibly engaged for the command
     wakeFlare(); armedListening = true; mode = "idle"; setState("listening", "Listening…");
@@ -295,7 +295,7 @@ function handle(m) {
   else if (m.type === "result") { const t = m.text || streamed; caption.textContent = t || "Done."; caption.scrollTop = 0; }
   else if (m.type === "speak-start") { mode = "speaking"; if (actx && actx.state === "suspended") actx.resume(); setState("speaking", caption.textContent); }
   else if (m.type === "speak-end") { speakEnded = true; if (!aplaying) finishSpeaking(); }
-  else if (m.type === "idle") { mode = "idle"; setState("idle", caption.textContent); }
+  else if (m.type === "idle") { armedListening = false; mode = "idle"; setState("idle", caption.textContent); }
   else if (m.type === "busy") setState("thinking", "One thing at a time…");
   else if (m.type === "error") { setState("idle", "Error: " + m.text); mode = "idle"; }
   else if (m.type === "search-delta") { searchAcc += m.text; if (rbodyEl) { rbodyEl.textContent = searchAcc; rbodyEl.parentElement.scrollTop = rbodyEl.parentElement.scrollHeight; } }
@@ -368,13 +368,9 @@ async function initAudio() {
     proc.onaudioprocess = (e) => {
       const ch = e.inputBuffer.getChannelData(0);
       if (capturing) capBuf.push(new Float32Array(ch));
-      // stream for wake + Silero VAD — including DURING a command capture (so the bridge can endpoint it);
-      // suppressed only during push-to-talk
-      if (WAKE_MODE && wsReady && !pttActive) {
-        const f = new Float32Array(ch);
-        streamWake(f);
-        if (!capturing) { preRoll.push(f); if (preRoll.length > 6) preRoll.shift(); } // ~0.5s rolling pre-roll
-      }
+      // continuous stream → the bridge does wake detection + Silero VAD + semantic endpointing.
+      // Suppressed only during push-to-talk (which captures locally and sends one tagged utterance).
+      if (WAKE_MODE && wsReady && !pttActive) streamWake(new Float32Array(ch));
     };
     src.connect(proc);
     const mute = actx.createGain(); mute.gain.value = 0; proc.connect(mute); mute.connect(actx.destination);
@@ -430,16 +426,9 @@ function streamWake(block) {
   for (let j = 0; j < ds.length; j++) { const s = ds[j] * 32768; i16[j] = s > 32767 ? 32767 : s < -32768 ? -32768 : s | 0; }
   sendTagged(1, i16);
 }
-// command capture: opened when "hey jarvis" fires (or for a conversation follow-up); endpoints on silence
-let commandCap = false, cmdTimer = null, preRoll = [], pttActive = false;
-function beginCommand() {
-  if (mode === "thinking" || listening) return;
-  clearTimeout(cmdTimer); commandCap = true;
-  startListen();                                    // capture begins (also barges in on any playback)
-  capBuf = preRoll.slice();                          // pre-roll so the first word after "hey jarvis" isn't clipped
-  cmdTimer = setTimeout(() => { if (commandCap) endCommand(); }, 16000); // safety cap; Silero on the bridge normally ends it
-}
-function endCommand() { if (!commandCap) return; commandCap = false; clearTimeout(cmdTimer); stopListen(); }
+// hands-free capture lives on the bridge now (it owns the audio for transcribe + semantic endpointing);
+// the HUD only streams + reflects state. pttActive suppresses the stream during push-to-talk.
+let pttActive = false;
 
 // ---------- playback queue (TTS audio streamed from the bridge) ----------
 let aqueue = [], aplaying = false, curSrc = null, speakEnded = false;
@@ -467,7 +456,7 @@ async function playNext() {
 }
 function stopPlayback() { clog(`STOP playback · q=${aqueue.length} mode=${mode}`); aqueue = []; speakEnded = false; if (curSrc) { try { curSrc.onended = null; curSrc.stop(); } catch {} curSrc = null; } aplaying = false; }
 function finishSpeaking() { clog("finishSpeaking"); speakEnded = false; if (mode === "speaking") { mode = "idle"; setState("idle", caption.textContent); if (WAKE_MODE) openFollowup(); } }
-function openFollowup() { beginCommand(); if (wsReady) ws.send(JSON.stringify({ type: "converse" })); } // conversation: listen for a reply without re-saying "Hey Jarvis" (bridge endpoints it)
+function openFollowup() { armedListening = true; setState("listening", "Listening…"); if (wsReady) ws.send(JSON.stringify({ type: "converse" })); } // conversation: listen for a reply without re-saying "Hey Jarvis" (bridge captures + endpoints)
 
 // ---------- mic level + double-clap wake (off) + hands-free "Hey Jarvis" VAD ----------
 const CLAP_WAKE = false;

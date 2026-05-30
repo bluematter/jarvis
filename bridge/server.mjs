@@ -14,10 +14,16 @@ import { ROOT } from "./env.mjs"; // loads .env into process.env (must be first)
 import { warmVoice, transcribe, synth, setVoice, currentVoice } from "./voice.mjs";
 import { loadWakeWord, createDetector } from "./wakeword.mjs";
 import { loadSilero, createVAD } from "./silero.mjs";
+import { loadTurnDetector, isTurnComplete } from "./turndetect.mjs";
 const WAKE_THRESHOLD = Number(process.env.JARVIS_WAKE_THRESHOLD || 0.5); // openWakeWord "hey jarvis" score to fire
-const END_SIL_MS = 650;    // Silero says speech, then this much true silence -> command done
+// hybrid endpoint: Silero gives accurate silence; the (conservative) turn model only ACCELERATES —
+// fire fast when it's confident you've finished a sentence. It never fires early when unsure, so it
+// can't cut you off; the Silero silence floor handles everything it isn't sure about.
+const CAND_SIL_MS = 250;   // brief pause -> transcribe + ask the turn model "are you done?"
+const FLOOR_SIL_MS = 850;  // end after this much silence when the model isn't confident (terse command, etc.)
 const NOSPEECH_MS = 6000;  // armed but nothing said -> give up
 const CMD_MAX_MS = 15000;  // hard cap on a single command
+const PRE_FRAMES = 6;      // ~0.5s rolling stream pre-roll so the first word after "hey jarvis" isn't clipped
 
 const HUD_DIR = join(ROOT, "hud");
 const env = process.env;
@@ -264,9 +270,35 @@ wss.on("connection", (ws) => {
   const detector = createDetector({ threshold: WAKE_THRESHOLD }); // per-connection openWakeWord state
   const vad = createVAD(); // per-connection Silero VAD, used to endpoint a command precisely
   let wakeChain = Promise.resolve(); // serialize async wake/VAD feeds so they don't race their rolling buffers
-  let epActive = false, epSpeech = false, epStart = 0, epLastSpeech = 0; // command endpoint state
-  function startEndpoint() { epActive = true; epSpeech = false; epStart = Date.now(); epLastSpeech = 0; vad.reset(); detector.reset(); } // clear "hey jarvis" from the wake buffer so it can't re-fire when detection resumes
-  function endpoint() { if (!epActive) return; epActive = false; epSpeech = false; send({ type: "endpoint" }); } // tell the HUD the command is done
+  // ---- hands-free command capture (bridge owns the audio so it can transcribe + semantically endpoint) ----
+  let epActive = false, epSpeech = false, epStart = 0, epSilStart = 0, epArmed = false, epChecking = false, epLastText = "";
+  let cmdAudio = [], cmdPre = []; // current command's audio frames + a rolling pre-roll of the stream
+  const stripWake = (s) => (s || "").replace(/^\s*(hey\s+)?[a-z']*jarv[a-z']*\b[\s,.:!?'’-]*/i, "").trim();
+  const mergeCmd = () => { let L = 0; for (const f of cmdAudio) L += f.length; const o = new Float32Array(L); let k = 0; for (const f of cmdAudio) { o.set(f, k); k += f.length; } return o; };
+  function resetCmd() { cmdAudio = []; epSpeech = false; epStart = 0; epSilStart = 0; epArmed = false; epChecking = false; epLastText = ""; }
+  function startEndpoint() { epActive = true; resetCmd(); cmdAudio = cmdPre.slice(); epStart = Date.now(); vad.reset(); detector.reset(); } // seed with pre-roll; clear wake buffer so it can't re-fire
+  function cancelCapture() { if (!epActive) return; epActive = false; resetCmd(); detector.reset(); send({ type: "idle" }); }
+  async function finishCapture(text) { // end of turn: run the command
+    if (!epActive) return; epActive = false;
+    const snap = mergeCmd(); resetCmd(); detector.reset();
+    if (!text) { try { text = stripWake(speechOnly(await transcribe(snap))); } catch { text = ""; } } // reuse the check's transcript if we have one
+    send({ type: "endpoint" }); // HUD: drop the listening UI
+    if (!text) return send({ type: "idle" });
+    console.log(`[wake] RUN "${text}"`);
+    send({ type: "transcript", text });
+    runTurn(text);
+  }
+  async function turnCheck() { // brief pause: transcribe what we have, ask the model if the thought is complete
+    epChecking = true;
+    let text = ""; try { text = stripWake(speechOnly(await transcribe(mergeCmd()))); } catch {}
+    if (!epActive) return;
+    if (!text) { epChecking = false; return; }            // nothing intelligible yet — keep waiting
+    let r = { prob: 1, complete: true }; try { r = await isTurnComplete(text); } catch {}
+    if (!epActive) return;
+    epLastText = text; // cache so the silence-floor path doesn't transcribe again
+    console.log(`[turn] "${text}" ${r.prob.toFixed(4)} -> ${r.complete ? "DONE" : "wait"}`);
+    if (r.complete) finishCapture(text); else epChecking = false; // complete -> fire now; else the silence floor decides
+  }
 
   send({ type: "ready", hub: HUB });
   send({ type: "history", items: recentTurns(30) }); // replay so the feed isn't blank on reload
@@ -282,15 +314,22 @@ wss.on("connection", (ws) => {
         const n = (b.length - 4) >> 1, mag = new Float32Array(n), norm = new Float32Array(n);
         for (let i = 0; i < n; i++) { const v = b.readInt16LE(4 + i * 2); mag[i] = v; norm[i] = v / 32768; }
         wakeChain = wakeChain.then(async () => {
+          cmdPre.push(norm); if (cmdPre.length > PRE_FRAMES) cmdPre.shift(); // rolling pre-roll of the stream
           if (!epActive && !busy && await detector.feed(mag, Date.now())) {
             console.log(`[wake] FIRE ${detector.score().toFixed(2)}`); send({ type: "wake-fire" }); startEndpoint();
           }
-          if (epActive) { // endpoint the command: speech (Silero) then a short true silence
+          if (epActive) {
+            cmdAudio.push(norm);
             const p = await vad.feed(norm), now = Date.now();
-            if (p > 0.5) { epSpeech = true; epLastSpeech = now; }
-            if (epSpeech && now - epLastSpeech >= END_SIL_MS) endpoint();
-            else if (!epSpeech && now - epStart >= NOSPEECH_MS) endpoint();
-            else if (now - epStart >= CMD_MAX_MS) endpoint();
+            if (p > 0.5) { epSpeech = true; epArmed = true; epSilStart = 0; epLastText = ""; } // speaking
+            else if (epSpeech) {
+              if (!epSilStart) epSilStart = now;
+              const sil = now - epSilStart;
+              if (sil >= FLOOR_SIL_MS) finishCapture(epLastText);                      // silence floor — reuse the check's transcript if any
+              else if (sil >= CAND_SIL_MS && epArmed && !epChecking) { epArmed = false; turnCheck(); } // brief pause -> ask the model (fires early if confident)
+            }
+            if (!epSpeech && now - epStart >= NOSPEECH_MS) cancelCapture();             // nothing said -> give up
+            else if (now - epStart >= CMD_MAX_MS) finishCapture();                      // safety cap
           }
         }).catch(() => {});
         return;
@@ -544,4 +583,5 @@ httpServer.listen(PORT, () => {
   }).catch((e) => console.log("  voice FAILED: " + (e?.message || e)));
   loadWakeWord((m) => console.log("  " + m)).catch((e) => console.log("  wake FAILED: " + (e?.message || e)));
   loadSilero((m) => console.log("  " + m)).catch((e) => console.log("  vad FAILED: " + (e?.message || e)));
+  loadTurnDetector((m) => console.log("  " + m)).catch((e) => console.log("  turn FAILED: " + (e?.message || e)));
 });
