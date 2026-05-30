@@ -224,6 +224,10 @@ wss.on("connection", (ws) => {
   let busy = false;
   let lastSttMs = 0; // STT time of the most recent voice utterance, folded into the turn's timing line
   let pendingGate = "none"; // "wake" = the next utterance must contain the wake word to run (hands-free VAD)
+  let awaitingCommand = false, awaitingSince = 0; // a bare "Hey Jarvis" arms a short window: the next burst runs as the command, no wake word needed
+  const FOLLOWUP_MS = 8000;
+  // Whisper labels non-speech as "(clicking)", "[BLANK_AUDIO]", "(typing)"… — strip those so a keyboard tap isn't a "command"
+  const speechOnly = (s) => (s || "").replace(/[\(\[][^)\]]*[\)\]]/g, " ").replace(/\s+/g, " ").trim();
   const send = (obj) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(obj));
   const sendAudio = (buf) => ws.readyState === ws.OPEN && ws.send(buf, { binary: true });
 
@@ -247,12 +251,31 @@ wss.on("connection", (ws) => {
         return send({ type: "error", text: "STT: " + (err?.message || err) });
       }
       lastSttMs = Date.now() - stStt;
-      if (gate === "wake") { // hands-free: only act if addressed to Jarvis; strip the wake phrase
-        const hit = /\bjarvis\b/i.test(text);
-        console.log(`[wake] heard "${text}" -> ${hit ? "RUN" : "ignored (no wake word)"}`);
-        if (!hit) return send({ type: "idle" });
-        text = text.replace(/^.*?\bjarvis\b['’s]*[\s,.:!?-]*/i, "").trim();
-        if (!text) return send({ type: "idle" }); // bare "hey jarvis" with no command
+      if (gate === "wake") { // hands-free: only act when addressed to Jarvis
+        const speech = speechOnly(text);
+        const hasWake = /\bjarvis\b/i.test(speech);
+        const inWindow = awaitingCommand && Date.now() - awaitingSince < FOLLOWUP_MS;
+        if (hasWake) {
+          const cmd = speech.replace(/^.*?\bjarvis\b['’s]*[\s,.:!?-]*/i, "").trim();
+          if (cmd) { // "Hey Jarvis, what's revenue" — wake + command in one breath
+            awaitingCommand = false;
+            console.log(`[wake] RUN "${cmd}"`);
+            send({ type: "transcript", text: cmd });
+            return runTurn(cmd);
+          }
+          // bare "Hey Jarvis" — arm the follow-up window and tell the HUD to keep listening
+          awaitingCommand = true; awaitingSince = Date.now();
+          console.log(`[wake] armed — awaiting command`);
+          return send({ type: "wake-armed" });
+        }
+        if (inWindow && speech) { // the command that followed a bare "Hey Jarvis" (the pause split it into two bursts)
+          awaitingCommand = false;
+          console.log(`[wake] RUN (follow-up) "${speech}"`);
+          send({ type: "transcript", text: speech });
+          return runTurn(speech);
+        }
+        console.log(`[wake] heard "${text}" -> ignored`);
+        return send({ type: "idle" });
       }
       send({ type: "transcript", text });
       if (!text) return send({ type: "idle" });

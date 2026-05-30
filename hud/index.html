@@ -272,8 +272,14 @@ function connect() {
     ws.onmessage = (e) => { if (typeof e.data === "string") handle(JSON.parse(e.data)); else enqueueAudio(e.data); };
   } catch (err) { setState("offline", "Bridge lost. Reconnecting…"); setTimeout(connect, 1500); }
 }
-let streamed = "";
+let streamed = "", wakeArmTimer = null;
 function handle(m) {
+  if (m.type === "wake-armed") { // bare "Hey Jarvis" heard → keep listening for the command
+    mode = "idle"; setState("listening", "Listening…");
+    clearTimeout(wakeArmTimer);
+    wakeArmTimer = setTimeout(() => { if (stateEl.textContent === "listening" && mode === "idle") setState("idle", "…"); }, 9000);
+    return;
+  }
   if (m.type === "voice-ready") { tbVoice.classList.add("on"); setState("idle", "Online. Say the word."); }
   else if (m.type === "history") renderHistory(m.items);
   else if (m.type === "brief-due") briefDue = m.due;
