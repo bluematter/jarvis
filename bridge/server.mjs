@@ -20,6 +20,8 @@ const PORT = Number(env.PORT || 4317);
 const HUB = join(ROOT, env.JARVIS_HUB?.replace(/^\.\//, "") || "hub");
 const MODEL = env.JARVIS_MODEL || undefined;
 const PERMISSION_MODE = env.JARVIS_PERMISSION_MODE || "bypassPermissions";
+// spoken ack when a turn reaches for tools, so a data-gathering turn isn't dead silence
+const FILLERS = ["Sure, scanning the data now.", "One sec, pulling that up.", "On it — checking the numbers.", "Let me look that up.", "Give me a moment, digging in."];
 
 // --- static HUD ---
 const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" };
@@ -342,7 +344,11 @@ wss.on("connection", (ws) => {
         send({ type: "delta", text: d.text }); T.pending += d.text; pullTTS(T, false);
       }
     } else if (ev.type === "assistant") {
-      for (const b of ev.message?.content || []) if (b.type === "tool_use") { T.tools++; send({ type: "tool", name: b.name, input: summarizeInput(b.input) }); }
+      for (const b of ev.message?.content || []) if (b.type === "tool_use") {
+        T.tools++;
+        if (T.tools === 1 && !T.startedSpeaking) enqueueTTS(T, FILLERS[(Math.random() * FILLERS.length) | 0]); // fill the gather-silence
+        send({ type: "tool", name: b.name, input: summarizeInput(b.input) });
+      }
     } else if (ev.type === "result") {
       T.tResult = Date.now() - T.t0; T.finalText = ev.result || T.finalText; finalizeTurn(T);
     }
