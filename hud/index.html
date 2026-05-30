@@ -192,6 +192,8 @@
     cursor: pointer; animation: toastin .3s var(--ease, ease); }
   .toast .tt { font-size: .68rem; letter-spacing: .12em; text-transform: uppercase; color: var(--c); font-family: var(--mono); }
   .toast .tb { font-size: .84rem; color: #e8f8ff; margin-top: 4px; line-height: 1.4; }
+  .toast.alert { border-color: rgba(255,180,84,.4); border-left-color: #ffb454; }
+  .toast.alert .tt { color: #ffb454; }
   @keyframes toastin { from { opacity: 0; transform: translateX(20px); } }
 </style>
 </head>
@@ -301,14 +303,15 @@ function handle(m) {
   else if (m.type === "search-delta") { searchAcc += m.text; if (rbodyEl) { rbodyEl.textContent = searchAcc; rbodyEl.parentElement.scrollTop = rbodyEl.parentElement.scrollHeight; } }
   else if (m.type === "search-result") { if (rbodyEl) rbodyEl.textContent = (m.text || searchAcc || "No matches found."); }
   else if (m.type === "search-error") { if (rbodyEl) rbodyEl.textContent = "Search error: " + m.text; }
-  else if (m.type === "toast") showToast(m.title, m.body);
+  else if (m.type === "toast") showToast(m.title, m.body, m.kind);
 }
-function showToast(title, body) {
-  const t = document.createElement("div"); t.className = "toast";
-  t.innerHTML = `<div class="tt">${escape(title)}</div><div class="tb">${escape(body)}</div>`;
-  t.onclick = () => { t.remove(); if (board.hidden) openBoard(); };
+function showToast(title, body, kind) {
+  const alert = kind === "alert";
+  const t = document.createElement("div"); t.className = "toast" + (alert ? " alert" : "");
+  t.innerHTML = `<div class="tt">${alert ? "⚠ " : ""}${escape(title)}</div><div class="tb">${escape(body)}</div>`;
+  t.onclick = () => { t.remove(); if (!alert && board.hidden) openBoard(); }; // alerts just dismiss; order toasts open the board
   $("toasts").appendChild(t);
-  setTimeout(() => t.remove(), 9000);
+  setTimeout(() => t.remove(), alert ? 13000 : 9000);
 }
 function addTool(name, input) {
   const d = document.createElement("div");

@@ -112,15 +112,65 @@ const todayStr = () => new Date().toISOString().slice(0, 10);
 const BRIEF_FILE = join(STATE, "brief.json");
 const briefDate = () => readJSON(BRIEF_FILE, {})?.date || "";
 const markBriefed = () => { try { writeFileSync(BRIEF_FILE, JSON.stringify({ date: todayStr() })); } catch {} };
-const BRIEF_PROMPT = `Give me a short SPOKEN morning briefing. Read metrics/*.card.json for current revenue (Gluely, BasedHealth, Wireflow) and fleet.md's "Active focus" for what changed across projects. In 3-4 natural sentences: lead with the revenue headline and any notable move, then what's actively being worked on, then 1-2 things that need my attention (uncommitted work sitting for days, anything dropping). Conversational, no lists, no markdown — you're speaking to me.`;
+const BRIEF_PROMPT = `Give me a SPOKEN morning briefing in 3-4 natural sentences. Read metrics/_digest.md (ONE file — revenue + fleet; do not run live queries). Lead with the revenue headline across Gluely, BasedHealth and Wireflow with the actual numbers. Then call out anything that looks OFF — a product with paying subscribers but ZERO trials (a broken trial funnel), trials piling up without converting, or a project with uncommitted work sitting for days. Close with the single most important thing to focus on today. Be a sharp COO: specific and numbers-driven, address me as "sir" once, no lists, no markdown — you're speaking to me.`;
 
-// keep the dashboard fresh while the bridge is up: re-scan fleet + re-pull connectors
+// ---------- proactive alerts: surface things WITHOUT being asked ----------
+const writeJSON = (p, o) => { try { writeFileSync(p, JSON.stringify(o, null, 2)); } catch {} };
+const ALERTS_FILE = join(STATE, "alerts.json");
+const _num = (v) => Number(String(v ?? "").replace(/[^0-9.]/g, "")) || 0;
+const _tile = (c, label) => (c.tiles || []).find((t) => (t.label || "").toLowerCase().includes(label));
+const _days = (s) => { const m = /(\d+)\s*(day|hour|week|month)/.exec(s || ""); if (!m) return 0; const n = +m[1]; return m[2] === "day" ? n : m[2] === "week" ? n * 7 : m[2] === "month" ? n * 30 : 0; };
+const HR = 3600e3;
+function computeAlerts(cards, fleet, prev) {
+  const alerts = [], snapshot = { ...(prev || {}) }, today = todayStr();
+  for (const c of cards) {
+    if (!c || c.status !== "ok" || !(c.source || "").startsWith("revenuecat")) continue;
+    const name = (c.title || c.source).split("·")[0].trim();
+    const subs = _num(_tile(c, "active sub")?.value), trials = _num(_tile(c, "trial")?.value), mrr = _num(_tile(c, "mrr")?.value);
+    if (subs >= 3 && trials === 0) // paying subs but nothing in the trial pipeline
+      alerts.push({ id: `funnel:${c.source}`, cooldown: 20 * HR, title: `${name}: trial funnel`, body: `${subs} subscribers but 0 trials — the trial funnel may be broken.` });
+    const snap = snapshot[c.source];
+    if (snap && snap.date !== today && snap.mrr > 0 && mrr > 0) { // day-over-day move
+      const pct = Math.round(((mrr - snap.mrr) / snap.mrr) * 100);
+      if (Math.abs(pct) >= 20) alerts.push({ id: `rev:${c.source}:${today}`, cooldown: 20 * HR, title: `${name}: MRR ${pct > 0 ? "up" : "down"} ${Math.abs(pct)}%`, body: `MRR ${pct > 0 ? "up" : "down"} to $${mrr.toLocaleString()} vs yesterday.` });
+    }
+    if (!snap || snap.date !== today) snapshot[c.source] = { mrr, date: today };
+  }
+  for (const r of fleet?.recent || []) // uncommitted work sitting for days
+    if ((r.dirty || 0) >= 3 && _days(r.ago) >= 3)
+      alerts.push({ id: `stale:${r.name}`, cooldown: 22 * HR, title: `${r.name}: uncommitted work`, body: `${r.dirty} uncommitted files, untouched ${r.ago} — commit or it'll bite you.` });
+  return { alerts, snapshot };
+}
+function runAlerts() {
+  try {
+    const cards = [];
+    for (const f of readdirSync(join(HUB, "metrics"))) if (f.endsWith(".card.json")) { const c = readJSON(join(HUB, "metrics", f), null); if (c) cards.push(c); }
+    const fleet = readJSON(join(HUB, "fleet.json"), null);
+    const st = readJSON(ALERTS_FILE, { snapshot: {}, sent: {} });
+    const { alerts, snapshot } = computeAlerts(cards, fleet, st.snapshot);
+    const now = Date.now(), sent = st.sent || {}, hasClient = [...wss.clients].some((c) => c.readyState === 1);
+    for (const a of alerts) {
+      if (sent[a.id] && now - sent[a.id] < a.cooldown) continue; // deduped within its cooldown
+      console.log(`[alert] ${a.title} — ${a.body}`);
+      if (!hasClient) continue;                 // nobody watching — re-evaluate next refresh
+      broadcast({ type: "toast", title: a.title, body: a.body, kind: "alert" });
+      sent[a.id] = now;
+    }
+    for (const k of Object.keys(sent)) if (now - sent[k] > 48 * HR) delete sent[k]; // prune
+    writeJSON(ALERTS_FILE, { snapshot, sent, updatedAt: now });
+  } catch (e) { console.log("alerts failed:", e?.message || e); }
+}
+
+// keep the dashboard fresh while the bridge is up: re-scan fleet + re-pull connectors, then check alerts
 const REFRESH_MS = Number(process.env.JARVIS_REFRESH_MS || 15 * 60 * 1000);
 function refreshData() {
   ensureMemWorker(); // piggyback the keep-alive on the refresh cadence
+  let pending = 0;
+  const done = () => { if (--pending <= 0) runAlerts(); };
   for (const script of ["scripts/scan-fleet.mjs", "scripts/run-connectors.mjs"]) {
-    try { spawn(process.execPath, [join(ROOT, script)], { cwd: ROOT, stdio: "ignore" }).on("error", () => {}); } catch {}
+    try { pending++; spawn(process.execPath, [join(ROOT, script)], { cwd: ROOT, stdio: "ignore" }).on("exit", done).on("error", done); } catch { pending--; }
   }
+  if (pending === 0) runAlerts();
 }
 
 // keep claude-mem's worker alive: its UserPromptSubmit hook fires every turn and waits up to +10s
@@ -306,6 +356,7 @@ wss.on("connection", (ws) => {
   send({ type: "brief-due", due: briefDate() !== todayStr() }); // first open of the day → auto-briefing
   ensureMemWorker(); // revive the claude-mem worker if it died (avoids the +10s hook stall)
   warmVoice().then(() => send({ type: "voice-ready", voice: currentVoice() })).catch(() => {});
+  setTimeout(runAlerts, 2500); // surface any standing alerts shortly after the HUD opens (deduped by cooldown)
 
   ws.on("message", async (data, isBinary) => {
     if (isBinary) {
