@@ -363,6 +363,45 @@ async function finishLive(id) {
   await finalizePR(order, wt, branch, order.summary || "Completed in a live session.");
 }
 
+// ---------- land the work: merge → auto-sync local main → cleanup (no command line) ----------
+async function defaultBranch(repoPath) {
+  try { return (await git(repoPath, ["rev-parse", "--abbrev-ref", "origin/HEAD"])).stdout.trim().replace(/^origin\//, "") || "main"; } catch { return "main"; }
+}
+async function syncLocal(repoPath) { // pull ONLY when it's safe — on the default branch with a clean tree (never clobber WIP)
+  try {
+    const def = await defaultBranch(repoPath);
+    const cur = (await git(repoPath, ["rev-parse", "--abbrev-ref", "HEAD"])).stdout.trim();
+    if (cur !== def) return { synced: false, reason: `you're on '${cur}' locally` };
+    if ((await git(repoPath, ["status", "--porcelain"])).stdout.trim()) return { synced: false, reason: "uncommitted changes" };
+    await git(repoPath, ["pull", "--ff-only"]);
+    return { synced: true, def };
+  } catch (e) { return { synced: false, reason: String(e?.message || e).slice(0, 80) }; }
+}
+function cleanupWorktree(order, repoPath) {
+  const wt = order.worktree || join(STATE, "wt", String(order.id).replace(/[^a-z0-9_-]/gi, ""));
+  git(repoPath, ["worktree", "remove", "--force", wt]).catch(() => {});
+  git(repoPath, ["branch", "-D", order.branch || "jarvis/" + order.id]).catch(() => {});
+}
+async function landOrder(order, repoPath, doMerge) {
+  if (doMerge) { try { await gh(repoPath, ["pr", "merge", order.branch, "--squash", "--delete-branch"]); } catch (e) { broadcast({ type: "toast", title: order.repo, body: "Merge failed: " + String(e?.message || e).slice(0, 120), kind: "alert" }); return; } }
+  const s = await syncLocal(repoPath);
+  cleanupWorktree(order, repoPath);
+  order.status = "archived"; order.merged = true; order.lastActivity = null; writeOrder(order);
+  notify(`Jarvis · ${order.repo}`, s.synced ? `✓ ${order.title} merged — local ${s.def} synced` : `✓ ${order.title} merged — \`git pull\` when ready (${s.reason})`);
+}
+async function mergeOrder(id) { // explicit "Merge & sync" button
+  const order = readOrder(id);
+  if (order && order.status === "done" && order.prUrl) await landOrder(order, join(ROOT, "..", order.repo), true);
+}
+async function pollMerges() { // if you merged the PR yourself on GitHub, sync local automatically
+  for (const order of listOrders()) {
+    if (order.status !== "done" || !order.prUrl || !order.branch) continue;
+    const repoPath = join(ROOT, "..", order.repo);
+    let state = ""; try { state = (await gh(repoPath, ["pr", "view", order.branch, "--json", "state", "-q", ".state"])).stdout.trim(); } catch { continue; }
+    if (state === "MERGED") await landOrder(order, repoPath, false);
+  }
+}
+
 // --- websocket bridge ---
 const wss = new WebSocketServer({ server: httpServer });
 
@@ -506,6 +545,7 @@ wss.on("connection", (ws) => {
     if (msg.type === "dispatch" && msg.id) { dispatchOrder(msg.id); return; } // fire-and-forget; HUD polls /orders
     if (msg.type === "go-live" && msg.id) { liveDispatch(msg.id); return; }    // escape hatch: interactive Terminal + Zed
     if (msg.type === "finish-live" && msg.id) { finishLive(msg.id); return; }  // close the live session -> PR
+    if (msg.type === "merge-order" && msg.id) { mergeOrder(msg.id); return; }  // merge the PR + sync local main
     if (msg.type === "delete-order" && msg.id) { const o = readOrder(msg.id); if (o && (o.status === "proposed" || o.status === "failed")) { try { unlinkSync(orderPath(msg.id)); console.log(`[order] deleted ${msg.id}`); } catch {} } return; } // only proposals are deletable
     if (msg.type === "archive-order" && msg.id) { const o = readOrder(msg.id); if (o && o.status === "done") { o.status = "archived"; writeOrder(o); console.log(`[order] archived ${msg.id}`); } return; } // done -> kept but hidden
   });
@@ -727,6 +767,7 @@ httpServer.listen(PORT, () => {
   console.log(`  mode: ${PERMISSION_MODE} · model: ${MODEL || "(default)"}`);
   refreshData(); // freshen fleet + connectors now…
   setInterval(refreshData, REFRESH_MS); // …and every ~15 min so the TV never goes stale
+  setInterval(pollMerges, 60000); // watch for PRs you merged on GitHub → auto-sync local main
   console.log(`  auto-refresh: every ${Math.round(REFRESH_MS / 60000)} min`);
   warmVoice({
     sttModel: env.JARVIS_STT_MODEL,

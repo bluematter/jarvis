@@ -176,8 +176,10 @@
     color: var(--c); border-radius: 7px; font-family: var(--font); font-size: .8rem; cursor: pointer; transition: .15s; }
   .kbtn:hover { background: var(--c); color: #02121a; } .kbtn:disabled { opacity: .5; cursor: default; }
   .kcard .krow { display: flex; gap: 8px; } .kcard .krow .kbtn { flex: 1; width: auto; }
-  .kcard .kpr { display: block; text-align: center; text-decoration: none; margin-top: 10px; background: rgba(120,255,200,.14); border-color: rgba(120,255,200,.4); color: #7dffc8; }
-  .kcard .kpr:hover { background: #7dffc8; color: #02121a; border-color: #7dffc8; }
+  .kcard .kpr { text-align: center; text-decoration: none; background: rgba(120,255,200,.12); border-color: rgba(120,255,200,.35); color: #7dffc8; }
+  .kcard .kpr:hover { background: rgba(120,255,200,.22); }
+  .kcard .kmerge { background: rgba(120,255,200,.9); border-color: #7dffc8; color: #02121a; font-weight: 600; }
+  .kcard .kmerge:hover { background: #7dffc8; }
   .kcard.kprog { border-color: rgba(180,120,255,.35); }
   .kcard .kact { display: flex; align-items: center; gap: 8px; font-size: .78rem; color: #b9a0e8; margin-top: 8px; }
   .kcard .kbranch { font-family: var(--mono); font-size: .62rem; color: #4d6f7e; margin-top: 7px; }
@@ -591,7 +593,7 @@ function orderCard(o) {
   if (o.status === "in_progress") {
     return `<div class="kcard kprog">${repo}<div class="ktitle">${escape(o.title)}</div><div class="kact"><span class="spin"></span>${escape(o.lastActivity || "working…")}</div><div class="kbranch">${escape(o.branch || "")}</div>${o.live ? `<button class="kbtn" data-finish="${escape(o.id)}" title="Close the live session and open the PR">✓ Finish → PR</button>` : ""}</div>`;
   }
-  const pr = o.prUrl ? `<a class="kbtn kpr" href="${escape(o.prUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">↗ Review PR</a>` : "";
+  const pr = o.prUrl ? `<div class="krow"><a class="kbtn kpr" href="${escape(o.prUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">↗ Review PR</a><button class="kbtn kmerge" data-merge="${escape(o.id)}" title="Merge the PR and pull your local main">✓ Merge &amp; sync</button></div>` : "";
   return `<div class="kcard kdone">${repo}<div class="ktitle">${escape(o.title)}</div><div class="ksum">${escape((o.summary || "").slice(0, 240))}</div><div class="kbranch">↳ ${escape(o.branch || "")}</div>${pr}<div class="krow"><button class="kbtn kghost" data-diff="${escape(o.id)}">view diff</button><button class="kbtn kghost" data-archive="${escape(o.id)}" title="Archive (keep, hide)">⤓ Archive</button></div></div>`;
 }
 const EMPTY = { proposed: "No proposals yet — ask Jarvis to queue work.", in_progress: "Idle.", done: "Nothing shipped yet." };
@@ -600,6 +602,7 @@ function wireCol(scope) {
   scope.querySelectorAll("[data-dispatch]").forEach((b) => (b.onclick = () => { ws.send(JSON.stringify({ type: "dispatch", id: b.dataset.dispatch })); b.textContent = "dispatching…"; b.disabled = true; }));
   scope.querySelectorAll("[data-live]").forEach((b) => (b.onclick = () => { ws.send(JSON.stringify({ type: "go-live", id: b.dataset.live })); b.textContent = "opening…"; b.disabled = true; }));
   scope.querySelectorAll("[data-finish]").forEach((b) => (b.onclick = () => { ws.send(JSON.stringify({ type: "finish-live", id: b.dataset.finish })); b.textContent = "finishing…"; b.disabled = true; }));
+  scope.querySelectorAll("[data-merge]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); ws.send(JSON.stringify({ type: "merge-order", id: b.dataset.merge })); b.textContent = "merging…"; b.disabled = true; }));
   const pull = (b, type) => { const id = b.dataset.del || b.dataset.archive; b.onclick = (e) => {
     e.stopPropagation();
     allOrders = allOrders.filter((o) => o.id !== id); // optimistic
