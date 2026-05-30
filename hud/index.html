@@ -268,6 +268,46 @@
   .toast.alert .tt { color: #ffb454; }
   @keyframes toastin { from { opacity: 0; transform: translateX(20px); } }
 </style>
+<link rel="stylesheet" href="/vendor/xterm.css" />
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/addon-fit.js"></script>
+<style>
+  /* ── Terminals panel (loaded after xterm.css so these win) ── */
+  .chip.brief.termlive { border-color: #7dffc8; color: #7dffc8; }
+  .term-card { width: min(1320px, 96vw); height: min(840px, 92vh); }
+  .termbar { display: flex; align-items: flex-end; gap: 6px; padding: 8px 14px 0; border-bottom: 1px solid rgba(56,225,255,.1); }
+  .ttabs { display: flex; gap: 5px; flex: 1; overflow-x: auto; scrollbar-width: none; }
+  .ttabs::-webkit-scrollbar { height: 0; }
+  .ttab { display: inline-flex; align-items: center; gap: 8px; flex: none; max-width: 240px; padding: 7px 9px 8px 12px; border-radius: 9px 9px 0 0;
+    background: rgba(8,18,28,.6); border: 1px solid rgba(56,225,255,.12); border-bottom: none; color: #8fb6c8; font-size: .78rem; cursor: pointer; transition: .14s; }
+  .ttab:hover { color: #cfeefb; border-color: rgba(56,225,255,.3); }
+  .ttab.on { background: rgba(56,225,255,.12); border-color: var(--c); color: #eafaff; }
+  .ttab .tlabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ttab .tdot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: #2ecc71; box-shadow: 0 0 8px #2ecc71; animation: tpulse 1.8s ease-in-out infinite; }
+  .ttab.exited .tdot { background: #45606e; box-shadow: none; animation: none; }
+  @keyframes tpulse { 50% { opacity: .35; } }
+  .ttab .tkill { color: #4d6f7e; font-size: .82rem; line-height: 1; padding: 1px 3px; border-radius: 4px; }
+  .ttab .tkill:hover { color: #ff7a7a; background: rgba(255,90,90,.14); }
+  .tnewbtn { flex: none; width: 30px; height: 30px; margin-bottom: 4px; border-radius: 8px; border: 1px dashed rgba(56,225,255,.3);
+    background: transparent; color: var(--c); font-size: 1.1rem; cursor: pointer; transition: .14s; }
+  .tnewbtn:hover { background: rgba(56,225,255,.1); border-style: solid; }
+  .termnew { display: flex; align-items: center; gap: 8px; padding: 11px 16px; border-bottom: 1px solid rgba(56,225,255,.08); background: rgba(4,12,20,.55); }
+  .termnew[hidden] { display: none; }
+  .termnew .search { flex: 1; margin: 0; width: auto; }
+  .tstart { color: #7dffc8; border-color: rgba(120,255,200,.32); }
+  .tstart:hover { background: rgba(120,255,200,.14); border-color: #7dffc8; }
+  .tstart.shell { color: var(--c); border-color: rgba(56,225,255,.3); }
+  .tstart.shell:hover { background: rgba(56,225,255,.12); border-color: var(--c); }
+  .thost { flex: 1; position: relative; background: rgba(2,9,16,.6); overflow: hidden; }
+  .tpane { position: absolute; inset: 0; padding: 10px 6px 8px 14px; }
+  .tpane[hidden] { display: none; }
+  .thost .xterm { height: 100%; }
+  .thost .xterm-viewport::-webkit-scrollbar { width: 9px; }
+  .thost .xterm-viewport::-webkit-scrollbar-thumb { background: rgba(56,225,255,.2); border-radius: 8px; }
+  .tempty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; text-align: center; color: #2f5263; font-size: .9rem; padding: 0 40px; }
+  .tempty b { color: #6fb8d4; font-weight: 500; font-size: 1rem; }
+  .tempty span { max-width: 460px; line-height: 1.5; }
+</style>
 </head>
 <body>
 <div id="app">
@@ -287,6 +327,7 @@
         <span class="chip" id="tbFleet"></span>
         <span class="chip brief" id="brief" title="Morning briefing (press B)">◐ Brief</span>
         <span class="chip brief" id="boardBtn" title="Work orders (press O)">⊞ Work</span>
+        <span class="chip brief" id="termBtn" title="Terminals — talk to Claude Code in any project (press T)">▤ Terminals</span>
         <span class="chip brief" id="sparksBtn" title="Idea dumps — triage daily (press I)">💡 Sparks</span>
         <span class="chip brief" id="routinesBtn" title="Recurring daily tasks (press R)">🔁 Routines</span>
       </div>
@@ -338,6 +379,31 @@
     <div class="sparklist" id="rtlist"></div>
   </div>
 </div>
+<div id="termpanel" class="board" hidden>
+  <div class="board-card term-card">
+    <div class="board-h"><span>▤ Terminals <em>— talk to Claude Code in any project, live</em></span><a id="termClose" title="Close (Esc)">✕</a></div>
+    <div class="termbar">
+      <div class="ttabs" id="ttabs"></div>
+      <button class="tnewbtn" id="tNew" title="New session">+</button>
+    </div>
+    <div class="termnew" id="termnew">
+      <select id="tProj" class="rtsel">
+        <option value="">jarvis (this repo)</option>
+        <option value="wireflow">Wireflow</option>
+        <option value="gluely-app">Gluely</option>
+        <option value="eatiq">BasedHealth</option>
+        <option value="rizz">Rizzly</option>
+        <option value="basedlabs-hub">BasedLabs</option>
+      </select>
+      <button class="sbtn tstart" data-kind="claude">✦ Claude</button>
+      <button class="sbtn tstart shell" data-kind="shell">⌘ Shell</button>
+      <input id="tCmd" class="search" placeholder="…or a command to run in the project, then ↵" autocomplete="off" />
+    </div>
+    <div class="thost" id="thost">
+      <div class="tempty" id="tempty"><b>No sessions running</b><span>Pick a project and hit <b>✦ Claude</b> — it boots a live Claude Code session right here, no external windows. Sessions stay alive in the background; come back to this tab anytime.</span></div>
+    </div>
+  </div>
+</div>
 <div id="toasts" class="toasts"></div>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -363,7 +429,7 @@ function connect() {
   try {
     ws = new WebSocket(`ws://${location.host}`);
     ws.binaryType = "arraybuffer";
-    ws.onopen = () => { wsReady = true; conn.classList.add("on"); tbBridge.classList.add("on"); setState("idle", "Online. Warming voice…"); }; // voice is set via JARVIS_VOICE in .env
+    ws.onopen = () => { wsReady = true; conn.classList.add("on"); tbBridge.classList.add("on"); setState("idle", "Online. Warming voice…"); ws.send(JSON.stringify({ type: "term-list" })); }; // voice is set via JARVIS_VOICE in .env
     ws.onclose = () => { wsReady = false; conn.classList.remove("on"); tbBridge.classList.remove("on"); tbVoice.classList.remove("on"); setState("offline", "Bridge lost. Reconnecting…"); setTimeout(connect, 1500); };
     ws.onmessage = (e) => { if (typeof e.data === "string") handle(JSON.parse(e.data)); else enqueueAudio(e.data); };
   } catch (err) { setState("offline", "Bridge lost. Reconnecting…"); setTimeout(connect, 1500); }
@@ -397,6 +463,10 @@ function handle(m) {
   else if (m.type === "search-result") { if (rbodyEl) rbodyEl.textContent = (m.text || searchAcc || "No matches found."); }
   else if (m.type === "search-error") { if (rbodyEl) rbodyEl.textContent = "Search error: " + m.text; }
   else if (m.type === "toast") showToast(m.title, m.body, m.kind);
+  else if (m.type === "term-list") handleTermList(m.sessions);
+  else if (m.type === "term-data") termData(m.id, m.data, m.replay);
+  else if (m.type === "term-spawned") { handleTermList(allTerms.concat([m]).filter((s, i, a) => a.findIndex((x) => x.id === s.id) === i)); if (!termpanel.hidden) activateTerm(m.id); }
+  else if (m.type === "term-exit") { const s = allTerms.find((x) => x.id === m.id); if (s) { s.exited = true; s.status = "exited"; } renderTabs(); }
 }
 function showToast(title, body, kind) {
   const alert = kind === "alert";
@@ -761,6 +831,104 @@ addEventListener("keydown", (e) => {
 });
 const todayDate = () => new Date().toISOString().slice(0, 10);
 refreshRoutines(); setInterval(refreshRoutines, 60000); // keep the chip's due-count fresh
+
+// ---------- Terminals: real PTYs (node-pty) streamed into themed xterm.js, tabbed ----------
+const termpanel = $("termpanel"), ttabs = $("ttabs"), thost = $("thost"), tempty = $("tempty"), termBtn = $("termBtn"), termnew = $("termnew");
+const TERM_THEME = {
+  background: "#020910", foreground: "#d6f3ff", cursor: "#38e1ff", cursorAccent: "#02121a", selectionBackground: "rgba(56,225,255,.28)",
+  black: "#0a1722", red: "#ff6b6b", green: "#7dffc8", yellow: "#ffd479", blue: "#5fb8ff", magenta: "#b478ff", cyan: "#38e1ff", white: "#cfeefb",
+  brightBlack: "#3a5460", brightRed: "#ff8e8e", brightGreen: "#9affdb", brightYellow: "#ffe6a8", brightBlue: "#8fd0ff", brightMagenta: "#cda0ff", brightCyan: "#7ef0ff", brightWhite: "#f2fbff",
+};
+let allTerms = [];        // session metadata from the bridge
+const terms = new Map();  // id -> { term, fit, pane, attached, pending }
+let activeTerm = null;
+function makeTerm(id) {
+  const pane = document.createElement("div"); pane.className = "tpane"; pane.dataset.id = id; thost.appendChild(pane);
+  const term = new Terminal({
+    allowProposedApi: true, allowTransparency: true, theme: TERM_THEME, scrollback: 8000,
+    fontFamily: "'JetBrains Mono','SF Mono',ui-monospace,Menlo,monospace", fontSize: 13, lineHeight: 1.15,
+    cursorBlink: true, cursorStyle: "bar", smoothScrollDuration: 60,
+  });
+  const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(pane);
+  term.onData((d) => wsReady && ws.send(JSON.stringify({ type: "term-input", id, data: d })));
+  const rec = { term, fit, pane, attached: false, pending: [] }; terms.set(id, rec);
+  if (wsReady) ws.send(JSON.stringify({ type: "term-attach", id })); // bridge replays the scrollback buffer
+  return rec;
+}
+function termData(id, data, replay) {
+  const rec = terms.get(id); if (!rec) return; // a session we haven't opened a view for yet (bridge keeps the buffer)
+  if (replay) { rec.term.reset(); rec.term.write(data); rec.attached = true; for (const d of rec.pending) rec.term.write(d); rec.pending = []; }
+  else if (rec.attached) rec.term.write(data);
+  else rec.pending.push(data); // buffer live data until the replay lands, so nothing double-writes
+}
+function fitTerm(id) {
+  const rec = terms.get(id); if (!rec || termpanel.hidden) return;
+  try { rec.fit.fit(); const { cols, rows } = rec.term; if (wsReady && cols && rows) ws.send(JSON.stringify({ type: "term-resize", id, cols, rows })); } catch {}
+}
+function activateTerm(id) {
+  if (!allTerms.find((s) => s.id === id)) return;
+  if (!terms.has(id)) makeTerm(id);
+  activeTerm = id; tempty.hidden = true;
+  for (const [tid, rec] of terms) rec.pane.hidden = tid !== id;
+  renderTabs();
+  requestAnimationFrame(() => { fitTerm(id); terms.get(id)?.term.focus(); });
+}
+function renderTabs() {
+  ttabs.innerHTML = allTerms.map((s) => {
+    const on = s.id === activeTerm ? " on" : "", ex = s.exited ? " exited" : "";
+    return `<div class="ttab${on}${ex}" data-tid="${s.id}"><span class="tdot"></span><span class="tlabel">${escape(s.label)}${s.exited ? " · exited" : ""}</span><a class="tkill" data-tkill="${s.id}" title="Kill session">✕</a></div>`;
+  }).join("");
+  ttabs.querySelectorAll(".ttab").forEach((el) => (el.onclick = (e) => { if (e.target.closest("[data-tkill]")) return; activateTerm(el.dataset.tid); }));
+  ttabs.querySelectorAll("[data-tkill]").forEach((el) => (el.onclick = (e) => { e.stopPropagation(); killTerm(el.dataset.tkill); }));
+}
+function killTerm(id) {
+  if (wsReady) ws.send(JSON.stringify({ type: "term-kill", id }));
+  const rec = terms.get(id); if (rec) { try { rec.term.dispose(); } catch {} rec.pane.remove(); terms.delete(id); }
+  allTerms = allTerms.filter((s) => s.id !== id);
+  if (activeTerm === id) { activeTerm = null; const next = allTerms[allTerms.length - 1]; if (next && !termpanel.hidden) activateTerm(next.id); else { tempty.hidden = allTerms.length > 0; renderTabs(); } }
+  else renderTabs();
+  updateTermChip();
+}
+function handleTermList(sessions) {
+  allTerms = sessions || [];
+  for (const id of [...terms.keys()]) if (!allTerms.find((s) => s.id === id)) { const r = terms.get(id); try { r.term.dispose(); } catch {} r.pane.remove(); terms.delete(id); }
+  if (activeTerm && !allTerms.find((s) => s.id === activeTerm)) activeTerm = null;
+  if (!termpanel.hidden) {
+    if (!activeTerm && allTerms.length) activateTerm(allTerms[allTerms.length - 1].id);
+    else { tempty.hidden = allTerms.length > 0; renderTabs(); }
+  }
+  updateTermChip();
+}
+function updateTermChip() {
+  const live = allTerms.filter((s) => !s.exited).length;
+  termBtn.textContent = "▤ Terminals" + (live ? " · " + live : "");
+  termBtn.classList.toggle("termlive", live > 0);
+}
+function spawnTerm(kind) {
+  const project = $("tProj").value, cmd = kind === "claude" ? "claude" : "";
+  if (wsReady) ws.send(JSON.stringify({ type: "term-spawn", project, cmd, label: (project || "jarvis") + (kind === "claude" ? " · claude" : ""), cols: 100, rows: 30 }));
+  termnew.hidden = true;
+}
+function openTerm() {
+  termpanel.hidden = false; if (wsReady) ws.send(JSON.stringify({ type: "term-list" }));
+  termnew.hidden = allTerms.length > 0; // auto-open the picker when there's nothing yet
+  if (activeTerm) activateTerm(activeTerm); else if (allTerms.length) activateTerm(allTerms[allTerms.length - 1].id); else { tempty.hidden = false; renderTabs(); }
+}
+const closeTerm = () => (termpanel.hidden = true);
+termBtn.onclick = () => (termpanel.hidden ? openTerm() : closeTerm());
+$("termClose").onclick = closeTerm;
+$("tNew").onclick = () => (termnew.hidden = !termnew.hidden);
+termnew.querySelectorAll(".tstart").forEach((b) => (b.onclick = () => spawnTerm(b.dataset.kind)));
+$("tCmd").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && $("tCmd").value.trim()) {
+    const project = $("tProj").value, cmd = $("tCmd").value.trim();
+    if (wsReady) ws.send(JSON.stringify({ type: "term-spawn", project, cmd, label: (project || "jarvis") + " · " + cmd.split(" ")[0], cols: 100, rows: 30 }));
+    $("tCmd").value = ""; termnew.hidden = true;
+  }
+});
+addEventListener("keydown", (e) => { if ((e.key === "t" || e.key === "T") && !typing(e)) { e.preventDefault(); termpanel.hidden ? openTerm() : closeTerm(); } });
+termpanel.addEventListener("mousedown", (e) => { if (e.target === termpanel) closeTerm(); }); // backdrop closes; Esc stays with the terminal
+addEventListener("resize", () => { if (!termpanel.hidden && activeTerm) fitTerm(activeTerm); });
 const REPO_LABEL = { wireflow: "Wireflow", "gluely-app": "Gluely", eatiq: "BasedHealth", "eatiq-mobile": "BasedHealth", rizz: "Rizzly", "basedlabs-hub": "BasedLabs" };
 const MAIN_PROJECTS = ["wireflow", "gluely-app", "eatiq", "rizz", "basedlabs-hub"]; // always-shown focus filters
 const repoLabel = (r) => REPO_LABEL[r] || r;

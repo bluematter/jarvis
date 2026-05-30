@@ -10,6 +10,8 @@ import { readFileSync, existsSync, readdirSync, appendFileSync, writeFileSync, m
 import { join, extname } from "node:path";
 import { WebSocketServer } from "ws";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { createRequire } from "node:module";
+const pty = createRequire(import.meta.url)("node-pty"); // CJS native module; real PTYs for the in-HUD terminal
 import { ROOT } from "./env.mjs"; // loads .env into process.env (must be first)
 import { warmVoice, transcribe, synth, setVoice, currentVoice } from "./voice.mjs";
 import { loadWakeWord, createDetector } from "./wakeword.mjs";
@@ -508,6 +510,36 @@ function notify(title, body) {
   try { spawn("osascript", ["-e", `display notification ${JSON.stringify(body)} with title ${JSON.stringify(title)}`], { stdio: "ignore" }).on("error", () => {}); } catch {}
 }
 
+// ---------- terminal sessions: real PTYs streamed to xterm.js in the HUD ----------
+// Sessions live HERE in the long-lived bridge, so they survive HUD refreshes — the browser is just a
+// view onto them. One PTY per session; output is buffered (replayed on attach) and broadcast to all tabs.
+const TERM_PROJECTS = ["wireflow", "gluely-app", "eatiq", "rizz", "basedlabs-hub"]; // pickable cwds (siblings of jarvis)
+const termSessions = new Map(); // id -> { id, label, project, cwd, pty, buffer, cols, rows, status, exited, createdAt }
+const TERM_SCROLLBACK = 200000; // chars of replay kept per session
+let termSeq = 0;
+const termMeta = (s) => ({ id: s.id, label: s.label, project: s.project, cwd: s.cwd, cols: s.cols, rows: s.rows, status: s.status, exited: s.exited, createdAt: s.createdAt });
+const termList = () => [...termSessions.values()].map(termMeta);
+const broadcastTerms = () => broadcast({ type: "term-list", sessions: termList() });
+function termSpawn({ project = "", cmd = "", label = "", cols = 100, rows = 30 } = {}) {
+  const cwd = project && TERM_PROJECTS.includes(project) ? join(ROOT, "..", project) : join(ROOT, "..");
+  if (!existsSync(cwd)) return null;
+  const id = "t" + (++termSeq).toString(36) + Date.now().toString(36).slice(-3);
+  const shell = process.env.SHELL || "/bin/zsh";
+  const args = cmd ? ["-lic", `${cmd}; exec ${shell} -li`] : ["-li"]; // run cmd then keep an interactive shell, else just a shell
+  const env = { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor", LANG: process.env.LANG || "en_US.UTF-8" };
+  let p; try { p = pty.spawn(shell, args, { name: "xterm-256color", cols, rows, cwd, env }); } catch (e) { console.log("[term] spawn failed:", e?.message || e); return null; }
+  const s = { id, label: label || project || "shell", project, cwd, pty: p, buffer: "", cols, rows, status: "running", exited: false, createdAt: new Date().toISOString() };
+  termSessions.set(id, s);
+  p.onData((d) => { s.buffer = (s.buffer + d).slice(-TERM_SCROLLBACK); broadcast({ type: "term-data", id, data: d }); });
+  p.onExit(({ exitCode }) => { s.status = "exited"; s.exited = true; broadcast({ type: "term-exit", id, code: exitCode }); broadcastTerms(); });
+  console.log(`[term] spawned ${id} (${s.label}) in ${cwd}${cmd ? " · " + cmd : ""}`);
+  broadcastTerms();
+  return s;
+}
+const termWrite = (id, data) => { const s = termSessions.get(id); if (s && !s.exited && typeof data === "string") s.pty.write(data); };
+const termResize = (id, cols, rows) => { const s = termSessions.get(id); if (s && !s.exited && cols > 0 && rows > 0) { s.cols = cols; s.rows = rows; try { s.pty.resize(cols, rows); } catch {} } };
+const termKill = (id) => { const s = termSessions.get(id); if (!s) return; try { s.pty.kill(); } catch {} termSessions.delete(id); console.log(`[term] killed ${id}`); broadcastTerms(); };
+
 // Fuzzy "Hey Jarvis" detector — base.en Whisper mangles "Jarvis" (adjargos, jervis, charvis, javis…).
 // Returns { hit, command }; command = the words after the wake token ("" for a bare "Hey Jarvis").
 function lev(a, b) {
@@ -648,6 +680,12 @@ wss.on("connection", (ws) => {
     if (msg.type === "routine-del" && msg.id) { delRoutine(msg.id); return; }
     if (msg.type === "routine-run" && msg.id) { runRoutine(msg.id); return; }
     if (msg.type === "routine-setcmd" && msg.id) { updateRoutine(msg.id, { cmd: String(msg.cmd || "").trim() }); return; }
+    if (msg.type === "term-spawn") { const s = termSpawn({ project: msg.project, cmd: msg.cmd, label: msg.label, cols: msg.cols, rows: msg.rows }); send(s ? { type: "term-spawned", ...termMeta(s) } : { type: "toast", title: "Couldn't open terminal", body: "project folder not found" }); return; }
+    if (msg.type === "term-input" && msg.id) { termWrite(msg.id, msg.data); return; }
+    if (msg.type === "term-resize" && msg.id) { termResize(msg.id, msg.cols | 0, msg.rows | 0); return; }
+    if (msg.type === "term-attach" && msg.id) { const s = termSessions.get(msg.id); if (s) send({ type: "term-data", id: s.id, data: s.buffer, replay: true }); return; }
+    if (msg.type === "term-kill" && msg.id) { termKill(msg.id); return; }
+    if (msg.type === "term-list") { send({ type: "term-list", sessions: termList() }); return; }
     if (msg.type === "dispatch" && msg.id) { dispatchOrder(msg.id); return; } // fire-and-forget; HUD polls /orders
     if (msg.type === "go-live" && msg.id) { liveDispatch(msg.id); return; }    // escape hatch: interactive Terminal + Zed
     if (msg.type === "finish-live" && msg.id) { finishLive(msg.id); return; }  // close the live session -> PR
@@ -888,7 +926,7 @@ function timingLog(T) {
   console.log(parts.join("  "));
 }
 
-httpServer.listen(PORT, () => {
+httpServer.listen(PORT, "127.0.0.1", () => { // localhost ONLY — the HUD has a live shell (terminal panel); never expose it off-box
   console.log(`\n  JARVIS online`);
   console.log(`  HUD:  http://localhost:${PORT}`);
   console.log(`  hub:  ${HUB}`);
