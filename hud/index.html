@@ -176,6 +176,8 @@
     color: var(--c); border-radius: 7px; font-family: var(--font); font-size: .8rem; cursor: pointer; transition: .15s; }
   .kbtn:hover { background: var(--c); color: #02121a; } .kbtn:disabled { opacity: .5; cursor: default; }
   .kcard .krow { display: flex; gap: 8px; } .kcard .krow .kbtn { flex: 1; width: auto; }
+  .kcard .kpr { display: block; text-align: center; text-decoration: none; margin-top: 10px; background: rgba(120,255,200,.14); border-color: rgba(120,255,200,.4); color: #7dffc8; }
+  .kcard .kpr:hover { background: #7dffc8; color: #02121a; border-color: #7dffc8; }
   .kcard.kprog { border-color: rgba(180,120,255,.35); }
   .kcard .kact { display: flex; align-items: center; gap: 8px; font-size: .78rem; color: #b9a0e8; margin-top: 8px; }
   .kcard .kbranch { font-family: var(--mono); font-size: .62rem; color: #4d6f7e; margin-top: 7px; }
@@ -589,7 +591,8 @@ function orderCard(o) {
   if (o.status === "in_progress") {
     return `<div class="kcard kprog">${repo}<div class="ktitle">${escape(o.title)}</div><div class="kact"><span class="spin"></span>${escape(o.lastActivity || "working…")}</div><div class="kbranch">${escape(o.branch || "")}</div></div>`;
   }
-  return `<div class="kcard kdone">${repo}<div class="ktitle">${escape(o.title)}</div><div class="ksum">${escape((o.summary || "").slice(0, 240))}</div><div class="kbranch">↳ ${escape(o.branch || "")}</div><div class="krow"><button class="kbtn kghost" data-diff="${escape(o.id)}">view diff</button><button class="kbtn kghost" data-archive="${escape(o.id)}" title="Archive (keep, hide)">⤓ Archive</button></div></div>`;
+  const pr = o.prUrl ? `<a class="kbtn kpr" href="${escape(o.prUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">↗ Review PR</a>` : "";
+  return `<div class="kcard kdone">${repo}<div class="ktitle">${escape(o.title)}</div><div class="ksum">${escape((o.summary || "").slice(0, 240))}</div><div class="kbranch">↳ ${escape(o.branch || "")}</div>${pr}<div class="krow"><button class="kbtn kghost" data-diff="${escape(o.id)}">view diff</button><button class="kbtn kghost" data-archive="${escape(o.id)}" title="Archive (keep, hide)">⤓ Archive</button></div></div>`;
 }
 const EMPTY = { proposed: "No proposals yet — ask Jarvis to queue work.", in_progress: "Idle.", done: "Nothing shipped yet." };
 let colSig = {};

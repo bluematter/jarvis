@@ -31,6 +31,7 @@ const env = process.env;
 const PORT = Number(env.PORT || 4317);
 const HUB = join(ROOT, env.JARVIS_HUB?.replace(/^\.\//, "") || "hub");
 const MODEL = env.JARVIS_MODEL || undefined;
+const DISPATCH_MODEL = env.JARVIS_DISPATCH_MODEL || "claude-opus-4-8"; // Opus for the actual code work (voice stays on MODEL)
 const PERMISSION_MODE = env.JARVIS_PERMISSION_MODE || "bypassPermissions";
 // spoken ack when a turn reaches for tools, so a data-gathering turn isn't dead silence
 const FILLERS = ["Sure, scanning the data now.", "One sec, pulling that up.", "On it — checking the numbers.", "Let me look that up.", "Give me a moment, digging in."];
@@ -199,6 +200,7 @@ const ORDERS_DIR = join(HUB, "orders");
 try { mkdirSync(ORDERS_DIR, { recursive: true }); } catch {}
 const pexec = promisify(execFile);
 const git = (cwd, args) => pexec("git", args, { cwd });
+const gh = (cwd, args) => pexec("gh", args, { cwd });
 const orderPath = (id) => join(ORDERS_DIR, String(id).replace(/[^a-z0-9_-]/gi, "") + ".json");
 const readOrder = (id) => readJSON(orderPath(id), null);
 const writeOrder = (o) => { try { writeFileSync(orderPath(o.id), JSON.stringify(o, null, 2)); } catch {} };
@@ -220,7 +222,13 @@ worktree already checked out on branch "${branch}". Everything you need is here.
 - A separate main checkout of this repo exists elsewhere — you must NOT find it, cd to it, or write
   to it. Stay in your current directory for everything.
 - Run git directly (you're already on the right branch): \`git add -A && git commit -m "…"\`.
-  Do NOT checkout/switch branches, do NOT push.
+  Do NOT checkout/switch branches, do NOT push (Jarvis opens the PR for you).
+
+SAFETY — you are sandboxed and CANNOT reach production (prod databases are wired into this repo). You
+must NOT: run the app, run ANY database/migration/seed command (psql, prisma migrate, drizzle, supabase,
+db:*), read .env, deploy, push, or merge. Those tools are blocked. Your ONLY job is to write code and
+commit it — tests/build run in CI and a human reviews the PR, so you never need to run anything. If a
+task seems to require running prod-touching commands, write the code anyway and note it in your summary.
 
 WORK-ORDER: ${order.title}
 
@@ -230,18 +238,34 @@ Do the work idiomatically. When done, commit on this branch, then reply with a 2
 exactly what you changed and any follow-up. If the task is unclear or unsafe, make NO changes and say why.`;
 }
 
-// hard guard: keep the dispatched agent inside its worktree — no writes outside, no cd / no main checkout
+// SAFETY: the dispatched agent only WRITES CODE in its worktree and commits. It can't reach prod —
+// no databases/migrations, no running the app, no deploy/push/merge, no .env. (Prod DBs are wired into
+// these repos, so this is the guardrail.) Verification happens via CI + your PR review, not the agent.
+const SECRET = /\.env(?!\.example|\.sample|\.template)(\.[a-z0-9]+)?\b/i; // .env / .env.local etc, but NOT .env.example
+const DANGER = [
+  /\b(psql|mysql|mongosh?|redis-cli|sqlite3|pg_dump|pg_restore|dropdb|createdb|mongoimport|mongodump)\b/i, // db clients
+  /\b(prisma)\s+(migrate|db|seed)\b/i, /\bdrizzle-kit\b/i, /\b(knex|sequelize)\b/i, /\bsupabase\s+(db|migration)/i, /\bdb:(push|migrate|seed|reset)\b/i,
+  /DATABASE_URL|POSTGRES|MONGO_?URI|REDIS_URL|SUPABASE_/i,                                                  // connection strings
+  /\b(npm|pnpm|yarn|bun)\s+(run|start|exec|dev|test|migrate|install|add|ci|publish)\b/i, /\bnode\s+(?!--check\b|--version\b)\S/i, /\b(python3?|ruby|rails|deno\s+run|php)\b/i, // running app/scripts
+  /\brm\s+-[rf]/i, /\btruncate\b/i, /\bgit\s+(push|reset\s+--hard|clean|rebase|merge|checkout\s+\.)/i,      // destructive / mutating git
+  /\b(vercel|netlify|fly|railway|deploy)\b/i, /\bgh\s+(release|repo|pr\s+merge|workflow|secret)/i,         // deploy / repo ops
+  /\bcurl\b|\bwget\b|\bhttpie\b|\bnc\b/i,                                                                  // exfiltration / network
+];
 function dispatchPolicy(wt, repoPath) {
   return (name, input) => {
+    const p = String(input?.file_path || input?.path || input?.pattern || input?.glob || "");
     if (["Write", "Edit", "MultiEdit"].includes(name)) {
-      const p = input?.file_path || input?.path || "";
       const abs = p.startsWith("/") ? p : join(wt, p);
       if (!abs.startsWith(wt)) return { behavior: "deny", message: "stay inside your worktree (relative paths only)" };
+      if (SECRET.test(p)) return { behavior: "deny", message: "do not touch .env — secrets are off limits" };
     }
+    if (["Read", "Grep", "Glob"].includes(name) && SECRET.test(p))
+      return { behavior: "deny", message: ".env is off limits — use .env.example for variable names" };
     if (name === "Bash") {
       const c = String(input?.command || "");
-      if (c.includes(repoPath) || /(^|[\s;&|(])cd\s+\//.test(c))
-        return { behavior: "deny", message: "work only in your current directory — no cd, no main checkout" };
+      if (c.includes(repoPath) || /(^|[\s;&|(])cd\s+\//.test(c)) return { behavior: "deny", message: "work only in your worktree — no cd, no main checkout" };
+      if (SECRET.test(c)) return { behavior: "deny", message: ".env is off limits" };
+      for (const re of DANGER) if (re.test(c)) return { behavior: "deny", message: "blocked for safety: no databases, app-run, deploy, push or network in autonomous mode — just write the code and commit; CI and your PR review verify it" };
     }
     return { behavior: "allow", updatedInput: input };
   };
@@ -264,7 +288,7 @@ async function dispatchOrder(id) {
     let out = "";
     const stream = query({
       prompt: dispatchPrompt(order, branch),
-      options: { cwd: wt, model: MODEL, permissionMode: "default", canUseTool: dispatchPolicy(wt, repoPath), settingSources: ["user", "project"] },
+      options: { cwd: wt, model: DISPATCH_MODEL, permissionMode: "default", canUseTool: dispatchPolicy(wt, repoPath), settingSources: ["user", "project"] },
     });
     for await (const ev of stream) {
       if (ev.type === "assistant") {
@@ -273,8 +297,26 @@ async function dispatchOrder(id) {
         }
       } else if (ev.type === "result") out = ev.result || out;
     }
-    order.status = "done"; order.summary = out.trim() || "Done."; order.lastActivity = null; order.worktree = wt; writeOrder(order);
-    notify(`Jarvis · ${order.repo}`, `✓ ${order.title} — ready to review on ${order.branch}`);
+    const ahead = (await git(wt, ["rev-list", "--count", `${order.base}..HEAD`]).catch(() => ({ stdout: "0" }))).stdout.trim();
+    if (!ahead || ahead === "0") { // agent made no commits — nothing to PR
+      order.status = "done"; order.summary = out.trim() || "No changes were made."; order.lastActivity = null; order.worktree = wt; writeOrder(order);
+      notify(`Jarvis · ${order.repo}`, `${order.title} — no changes made`); return;
+    }
+    // autonomous → PR (the bridge does this; the agent never pushes/merges)
+    order.lastActivity = "opening pull request…"; writeOrder(order);
+    let prUrl = "";
+    try {
+      await git(wt, ["push", "-u", "origin", branch, "--force-with-lease"]);
+      const body = `${order.brief}\n\n---\n**Jarvis agent summary:** ${out.trim() || "(none)"}\n\n_Dispatched autonomously by Jarvis — review before merge._`;
+      const r = await gh(wt, ["pr", "create", "--head", branch, "--title", order.title, "--body", body]);
+      prUrl = (r.stdout || "").trim().split(/\s+/).filter((s) => s.startsWith("http")).pop() || "";
+    } catch (e) {
+      try { prUrl = (await gh(wt, ["pr", "view", branch, "--json", "url", "-q", ".url"])).stdout.trim(); } catch {}
+      if (!prUrl) { order.status = "failed"; order.summary = "code committed but the PR step failed: " + String(e?.message || e).slice(0, 200); order.lastActivity = null; writeOrder(order); notify(`Jarvis · ${order.repo}`, `✕ ${order.title} — PR step failed`); return; }
+    }
+    order.status = "done"; order.summary = out.trim() || "Done."; order.prUrl = prUrl; order.lastActivity = null; order.worktree = wt; writeOrder(order);
+    notify(`Jarvis · ${order.repo}`, `✓ ${order.title} — PR ready to review`);
+    if (prUrl) { try { spawn("open", [prUrl], { stdio: "ignore" }).on("error", () => {}); } catch {} } // pop the PR open for a quick review
   } catch (e) {
     order.status = "failed"; order.summary = String(e?.message || e).slice(0, 300); order.lastActivity = null; writeOrder(order);
     notify(`Jarvis · ${order.repo}`, `✕ ${order.title} failed`);
