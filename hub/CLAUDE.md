@@ -55,9 +55,10 @@ claude-mem for the why and the open threads. Mention the project by name when yo
 
 When asked for insight, pull from these, then summarize the *takeaway* out loud — not raw tables.
 
-**Gather the MINIMUM — speed matters.** For revenue/metrics/status questions the cached files already
-hold the answer: read `metrics/*.card.json` and `fleet.md` (often a SINGLE read), refreshed every ~15
-min so they're current. Do NOT run many live MCP queries or read a dozen files for one spoken answer —
+**Gather the MINIMUM — speed matters.** For "how's everything / all products / overall" questions,
+read `metrics/_digest.md` — ONE file with every product's revenue + fleet status. For a single
+product, read its one `metrics/<product>.card.json`. These are refreshed every ~15 min so they're
+current. Do NOT run many live MCP queries or read a dozen files for one spoken answer —
 that drags a turn to 30+ seconds of silence. Use live MCP only when Michael explicitly asks for fresh
 or real-time numbers. Fewest tool calls possible, then answer in one sentence.
 
