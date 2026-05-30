@@ -36,7 +36,24 @@ const readState = () => {
   return { fleet, cards, metricsUpdatedAt: metrics?.updatedAt || null };
 };
 
-const httpServer = createServer((req, res) => {
+const httpServer = createServer(async (req, res) => {
+  if (req.url.split("?")[0] === "/diff") {
+    const id = new URL(req.url, "http://x").searchParams.get("id");
+    const order = id && readOrder(id);
+    if (!order || !order.branch || !order.base) { res.writeHead(404, { "content-type": "application/json" }).end("{}"); return; }
+    try {
+      const repoPath = join(ROOT, "..", order.repo);
+      const range = `${order.base}..${order.branch}`;
+      const stat = (await git(repoPath, ["diff", "--stat", range])).stdout;
+      let patch = (await git(repoPath, ["diff", range])).stdout;
+      if (patch.length > 14000) patch = patch.slice(0, 14000) + "\n… (truncated — review the branch)";
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+      res.end(JSON.stringify({ stat, patch, branch: order.branch }));
+    } catch (e) {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ stat: "", patch: String(e?.message || e), branch: order.branch }));
+    }
+    return;
+  }
   if (req.url.split("?")[0] === "/state") {
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
     res.end(JSON.stringify(readState()));
@@ -155,6 +172,8 @@ async function dispatchOrder(id) {
     try { await git(repoPath, ["worktree", "remove", "--force", wt]); } catch {}
     try { await git(repoPath, ["branch", "-D", branch]); } catch {}
     await git(repoPath, ["worktree", "add", "-b", branch, wt, "HEAD"]);
+    order.base = (await git(repoPath, ["rev-parse", "HEAD"])).stdout.trim(); // for the diff preview
+    writeOrder(order);
     let out = "";
     const stream = query({
       prompt: dispatchPrompt(order, branch),
@@ -168,13 +187,22 @@ async function dispatchOrder(id) {
       } else if (ev.type === "result") out = ev.result || out;
     }
     order.status = "done"; order.summary = out.trim() || "Done."; order.lastActivity = null; order.worktree = wt; writeOrder(order);
+    notify(`Jarvis · ${order.repo}`, `✓ ${order.title} — ready to review on ${order.branch}`);
   } catch (e) {
     order.status = "failed"; order.summary = String(e?.message || e).slice(0, 300); order.lastActivity = null; writeOrder(order);
+    notify(`Jarvis · ${order.repo}`, `✕ ${order.title} failed`);
   }
 }
 
 // --- websocket bridge ---
 const wss = new WebSocketServer({ server: httpServer });
+
+// proactive notifications: a HUD toast (all open tabs) + a native macOS notification
+const broadcast = (obj) => { const s = JSON.stringify(obj); for (const c of wss.clients) if (c.readyState === 1) c.send(s); };
+function notify(title, body) {
+  broadcast({ type: "toast", title, body });
+  try { spawn("osascript", ["-e", `display notification ${JSON.stringify(body)} with title ${JSON.stringify(title)}`], { stdio: "ignore" }).on("error", () => {}); } catch {}
+}
 
 wss.on("connection", (ws) => {
   let sessionId = lastSession; // resume the last conversation across HUD refreshes
