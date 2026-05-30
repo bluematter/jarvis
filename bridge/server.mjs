@@ -112,7 +112,15 @@ const todayStr = () => new Date().toISOString().slice(0, 10);
 const BRIEF_FILE = join(STATE, "brief.json");
 const briefDate = () => readJSON(BRIEF_FILE, {})?.date || "";
 const markBriefed = () => { try { writeFileSync(BRIEF_FILE, JSON.stringify({ date: todayStr() })); } catch {} };
-const BRIEF_PROMPT = `Give me a SPOKEN morning briefing in 3-4 natural sentences. Read metrics/_digest.md (ONE file — revenue + fleet; do not run live queries). Lead with the revenue headline across Gluely, BasedHealth and Wireflow with the actual numbers. Then call out anything that looks OFF — a product with paying subscribers but ZERO trials (a broken trial funnel), trials piling up without converting, or a project with uncommitted work sitting for days. Close with the single most important thing to focus on today. Be a sharp COO: specific and numbers-driven, address me as "sir" once, no lists, no markdown — you're speaking to me.`;
+const briefPrompt = () => {
+  const h = new Date().getHours();
+  const greet = h < 5 ? "It is the middle of the night (after midnight) — do NOT say 'good morning'; open with a dry nod to the late hour, e.g. 'Burning the midnight oil, sir' or 'Still at it, sir.'"
+    : h < 12 ? "It is morning — open with 'Good morning, sir.'"
+    : h < 17 ? "It is the afternoon — open with 'Good afternoon, sir.'"
+    : h < 22 ? "It is the evening — open with 'Good evening, sir.'"
+    : "It is late at night — do NOT say 'good morning'; open with a wry nod to the late hour, e.g. 'Up late, sir.'";
+  return `Give me a SPOKEN briefing in 3-4 natural sentences. ${greet} Read metrics/_digest.md (ONE file — revenue + fleet; do not run live queries). Lead with the revenue headline across Gluely, BasedHealth and Wireflow with the actual numbers. Then call out anything that looks OFF — a product with paying subscribers but ZERO trials (a broken trial funnel), trials piling up without converting, or a project with uncommitted work sitting for days. Close with the single most important thing to focus on today. Be a sharp COO: specific and numbers-driven, address me as "sir" once, no lists, no markdown — you're speaking to me.`;
+};
 
 // ---------- proactive alerts: surface things WITHOUT being asked ----------
 const writeJSON = (p, o) => { try { writeFileSync(p, JSON.stringify(o, null, 2)); } catch {} };
@@ -583,7 +591,7 @@ wss.on("connection", (ws) => {
   }
 
   const runTurn = (prompt) => speakTurn(prompt, prompt);
-  const runBrief = () => { markBriefed(); return speakTurn("☼ Morning briefing", BRIEF_PROMPT); };
+  const runBrief = () => { markBriefed(); return speakTurn("☼ Briefing", briefPrompt()); };
 
   ws.on("close", () => { try { convo?.q?.close?.(); } catch {} convo = null; currentTurn = null; });
 });
