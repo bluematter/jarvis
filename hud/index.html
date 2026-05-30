@@ -844,24 +844,28 @@ function ago(iso) {
 }
 const arrow = (d) => (d === "up" ? " ↑" : d === "down" ? " ↓" : "");
 const num = (v) => Number(String(v ?? "").replace(/[^0-9.]/g, "")) || 0;
-// "Portfolio · all products" summary card — sums each product's headline revenue vs the combined goal
+// "Portfolio" summary card — product revenue + crypto, vs the combined revenue goal
 function portfolioCard(cards, st) {
-  let rev = 0, goal = 0, n = 0;
+  let rev = 0, goal = 0, n = 0, crypto = 0;
   for (const c of cards) {
-    if (!c || c.status !== "ok" || c.source === "wallet") continue; // wallet is an asset, not project revenue
+    if (!c || c.status !== "ok") continue;
+    if (c.source === "wallet") { const tv = (c.tiles || []).find((x) => /total|value/i.test(x.label)); crypto = tv ? num(tv.value) : 0; continue; }
     const t = c.tiles || [];
     const tile = t.find((x) => /mrr/i.test(x.label)) || t.find((x) => /revenue/i.test(x.label));
     const v = tile ? num(tile.value) : 0; if (!v) continue;
     rev += v; n++; goal += (st.goalByCard && st.goalByCard[c.source]) || st.goalMRR || 10000;
   }
-  if (n < 2) return "";
+  if (n < 2 && !crypto) return "";
+  const m = (x) => "$" + Math.round(x).toLocaleString();
   const pct = goal ? Math.max(2, Math.min(100, (rev / goal) * 100)) : 0;
-  const money = "$" + Math.round(rev).toLocaleString(), goalLbl = goal >= 1000 ? "$" + Math.round(goal / 1000) + "k" : "$" + goal;
-  return `<div class="card total"><div class="ct"><span class="sdot ok"></span>Portfolio · all products</div>
-    <div class="tiles"><div class="tile"><div class="lbl">Run rate / mo</div><div class="val">${money}</div></div>
-      <div class="tile"><div class="lbl">Products</div><div class="val">${n}</div></div></div>
+  const goalLbl = goal >= 1000 ? "$" + Math.round(goal / 1000) + "k" : "$" + goal;
+  return `<div class="card total"><div class="ct"><span class="sdot ok"></span>Portfolio · everything</div>
+    <div class="tiles">
+      <div class="tile"><div class="lbl">Combined</div><div class="val">${m(rev + crypto)}</div></div>
+      <div class="tile"><div class="lbl">Revenue / mo</div><div class="val">${m(rev)}</div></div>
+      <div class="tile"><div class="lbl">Crypto</div><div class="val">${m(crypto)}</div></div></div>
     <div class="goalbar"><div class="gtrack"><div class="gfill${pct >= 100 ? " gdone" : ""}" style="width:${pct.toFixed(1)}%"></div></div>
-      <div class="gmeta"><span>${money}</span><span>${Math.round(pct)}% <i>→ ${goalLbl} combined</i></span></div></div></div>`;
+      <div class="gmeta"><span>${m(rev)} rev</span><span>${Math.round(pct)}% <i>→ ${goalLbl}/mo</i></span></div></div></div>`;
 }
 // futuristic revenue-vs-goal progress bar (goal from config.json, served in /state)
 function goalBar(c, st) {
