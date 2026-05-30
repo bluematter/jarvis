@@ -455,7 +455,8 @@ addEventListener("keydown", (e) => {
   if ((e.key === "o" || e.key === "O") && !typing(e)) { e.preventDefault(); board.hidden ? openBoard() : closeBoard(); }
   else if (e.key === "Escape" && !board.hidden) closeBoard();
 });
-const REPO_LABEL = { eatiq: "BasedHealth", "eatiq-mobile": "BasedHealth", "gluely-app": "Gluely", wireflow: "Wireflow", "basedlabs-hub": "BasedLabs", rizz: "Rizz" };
+const REPO_LABEL = { wireflow: "Wireflow", "gluely-app": "Gluely", eatiq: "BasedHealth", "eatiq-mobile": "BasedHealth", rizz: "Rizzly", "basedlabs-hub": "BasedLabs" };
+const MAIN_PROJECTS = ["wireflow", "gluely-app", "eatiq", "rizz", "basedlabs-hub"]; // always-shown focus filters
 const repoLabel = (r) => REPO_LABEL[r] || r;
 const kempty = (t) => `<div class="kempty">${escape(t)}</div>`;
 function orderCard(o) {
@@ -488,7 +489,8 @@ async function refreshOrders() {
   renderBoard();
 }
 function renderBoard() {
-  const repos = [...new Set(allOrders.map((o) => o.repo))].sort();
+  const extra = [...new Set(allOrders.map((o) => o.repo))].filter((r) => !MAIN_PROJECTS.includes(r)).sort();
+  const repos = [...MAIN_PROJECTS, ...extra]; // pin the focus projects, then any other repos with orders
   const fsig = boardFilter + "|" + repos.join(",");
   if (fsig !== filterSig) { // rebuild filter chips when the repo set or active filter changes
     filterSig = fsig;
