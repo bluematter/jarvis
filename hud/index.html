@@ -367,7 +367,11 @@ async function initAudio() {
     proc.onaudioprocess = (e) => {
       const ch = e.inputBuffer.getChannelData(0);
       if (capturing) capBuf.push(new Float32Array(ch));
-      else if (WAKE_MODE && wsReady) streamWake(ch); // stream to the bridge for "hey jarvis" detection
+      else if (WAKE_MODE && wsReady) {
+        const f = new Float32Array(ch);
+        streamWake(f);                                  // stream to the bridge for "hey jarvis" detection
+        preRoll.push(f); if (preRoll.length > 6) preRoll.shift(); // ~0.5s rolling pre-roll
+      }
     };
     src.connect(proc);
     const mute = actx.createGain(); mute.gain.value = 0; proc.connect(mute); mute.connect(actx.destination);
@@ -424,12 +428,13 @@ function streamWake(block) {
   sendTagged(1, i16);
 }
 // command capture: opened when "hey jarvis" fires (or for a conversation follow-up); endpoints on silence
-let commandCap = false, cmdHeard = false, cmdTimer = null;
+let commandCap = false, cmdHeard = false, cmdTimer = null, cmdStart = 0, preRoll = [];
 function beginCommand() {
   if (mode === "thinking" || listening) return;
-  clearTimeout(cmdTimer); commandCap = true; cmdHeard = false;
+  clearTimeout(cmdTimer); commandCap = true; cmdHeard = false; cmdStart = performance.now();
   startListen();                                   // capture begins (also barges in on any playback)
-  cmdTimer = setTimeout(() => { if (commandCap) endCommand(); }, 7000); // give up if nothing is said
+  capBuf = preRoll.slice();                         // include the ~0.5s before, so the first word after "hey jarvis" isn't clipped
+  cmdTimer = setTimeout(() => { if (commandCap && !cmdHeard) endCommand(); }, 8000); // give up only if nothing was said
 }
 function endCommand() { if (!commandCap) return; commandCap = false; cmdHeard = false; clearTimeout(cmdTimer); stopListen(); }
 
@@ -467,7 +472,7 @@ let WAKE_MODE = localStorage.getItem("jarvisWake") === "1"; // hands-free: VAD c
 function clapLoop() {
   let lastClap = 0, claps = 0, prev = 0;
   let vad = false, silence = 0;
-  const VSTART = 28, VEND = 13, VHANG = 18; // speech-onset / silence peak (0-128) + ~720ms silence to end
+  const VSTART = 28, VEND = 13, VHANG = 32; // speech-onset / silence peak (0-128) + ~1.3s silence to end (tolerate mid-sentence pauses)
   setInterval(() => {
     if (!micAnalyser) return;
     micAnalyser.getByteTimeDomainData(tmp);
@@ -484,6 +489,7 @@ function clapLoop() {
     if (commandCap && listening) {
       if (peak > VSTART) { cmdHeard = true; silence = 0; }
       else if (cmdHeard && ++silence > VHANG) endCommand();
+      if (now - cmdStart > 15000) endCommand(); // hard cap so a noisy room can't capture forever
     } else silence = 0;
   }, 40);
 }
