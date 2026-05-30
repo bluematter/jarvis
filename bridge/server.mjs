@@ -328,39 +328,38 @@ async function dispatchOrder(id) {
   }
 }
 
-// LIVE escape hatch: open an interactive Claude session in Terminal + Zed on an isolated branch. You
-// drive it (approve every command, run db/deploy yourself) — full access, because you're present.
+// LIVE escape hatch: open interactive Claude in Terminal + Zed IN YOUR REAL CHECKOUT, so your already-
+// running simulator / dev server HOT-RELOADS as it edits. You drive it (approve every command, run
+// db/deploy yourself). Unlike Dispatch this is NOT isolated — that's the point: you want to see it live.
 async function liveDispatch(id) {
   const order = readOrder(id);
   if (!order || (order.status !== "proposed" && order.status !== "failed")) return;
   const repoPath = join(ROOT, "..", order.repo);
   if (!existsSync(join(repoPath, ".git"))) { order.status = "failed"; order.summary = "repo not found: " + order.repo; writeOrder(order); return; }
-  const branch = "jarvis/" + order.id;
-  const wt = join(STATE, "wt", String(order.id).replace(/[^a-z0-9_-]/gi, ""));
   try {
-    try { await git(repoPath, ["worktree", "remove", "--force", wt]); } catch {}
-    try { await git(repoPath, ["branch", "-D", branch]); } catch {}
-    await git(repoPath, ["worktree", "add", "-b", branch, wt, "HEAD"]);
+    const dirty = (await git(repoPath, ["status", "--porcelain"])).stdout.trim();
+    let branch = (await git(repoPath, ["rev-parse", "--abbrev-ref", "HEAD"])).stdout.trim();
+    if (!dirty) { branch = "jarvis/" + order.id; try { await git(repoPath, ["checkout", "-B", branch]); } catch {} } // clean tree -> a fresh branch for a clean PR
     order.base = (await git(repoPath, ["rev-parse", "HEAD"])).stdout.trim();
-    for (const f of ["node_modules", ".env"]) { try { if (existsSync(join(repoPath, f)) && !existsSync(join(wt, f))) symlinkSync(join(repoPath, f), join(wt, f)); } catch {} } // deps + env so you can actually run things
-    writeFileSync(join(wt, ".jarvis-brief.txt"), `${order.title}\n\n${order.brief}`);
-    const go = join(wt, ".jarvis-go.sh");
-    writeFileSync(go, `#!/bin/bash\ncd "${wt}" || exit 1\nclear\necho "── Jarvis live · ${order.repo} · ${branch} ──"\necho "Interactive Claude — you approve every command. Commit when done, then click 'Finish → PR' in Jarvis."\necho\nexec claude "$(cat .jarvis-brief.txt)"\n`);
-    order.status = "in_progress"; order.branch = branch; order.live = true; order.worktree = wt; order.lastActivity = "live session — Terminal + Zed open"; order.summary = null; writeOrder(order);
+    const dir = join(STATE, "live", String(order.id).replace(/[^a-z0-9_-]/gi, "")); mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "brief.txt"), `${order.title}\n\n${order.brief}`);
+    const go = join(dir, "go.sh");
+    writeFileSync(go, `#!/bin/bash\ncd "${repoPath}" || exit 1\nclear\necho "── Jarvis live · ${order.repo} · ${branch} — your real checkout, the simulator will hot-reload ──"\necho "Interactive Claude — you approve every command. Commit when done, then click 'Finish → PR' in Jarvis."\necho\nexec claude "$(cat '${join(dir, "brief.txt")}')"\n`);
+    order.status = "in_progress"; order.branch = branch; order.live = true; order.inPlace = true; order.repoPath = repoPath; order.lastActivity = `live in your ${order.repo} checkout — simulator hot-reloads`; order.summary = null; writeOrder(order);
     spawn("osascript", ["-e", `tell application "Terminal" to do script "bash '${go}'"`, "-e", `tell application "Terminal" to activate`], { stdio: "ignore" }).on("error", () => {});
-    try { spawn(ZED, [wt], { stdio: "ignore" }).on("error", () => {}); } catch {}
-    notify(`Jarvis · ${order.repo}`, `Live session open — Terminal + Zed on ${branch}`);
+    try { spawn(ZED, [repoPath], { stdio: "ignore" }).on("error", () => {}); } catch {}
+    notify(`Jarvis · ${order.repo}`, dirty ? `Live on your current branch (${branch}) — you had uncommitted changes` : `Live — editing ${order.repo}; your simulator will hot-reload`);
   } catch (e) { order.status = "failed"; order.summary = "live launch failed: " + String(e?.message || e).slice(0, 200); order.live = false; writeOrder(order); }
 }
 async function finishLive(id) {
   const order = readOrder(id);
   if (!order || order.status !== "in_progress" || !order.live) return;
-  const wt = order.worktree || join(STATE, "wt", String(order.id).replace(/[^a-z0-9_-]/gi, ""));
+  const repoPath = order.repoPath || join(ROOT, "..", order.repo);
   const branch = order.branch || "jarvis/" + order.id;
   order.lastActivity = "wrapping up the live session…"; writeOrder(order);
-  for (const f of [".jarvis-go.sh", ".jarvis-brief.txt", "node_modules", ".env"]) { try { unlinkSync(join(wt, f)); } catch {} } // drop the scaffolding/symlinks so they don't get committed
-  try { await git(wt, ["add", "-A"]); await git(wt, ["commit", "-m", order.title]); } catch {} // capture anything still uncommitted (no-op if already committed)
-  await finalizePR(order, wt, branch, order.summary || "Completed in a live session.");
+  try { await git(repoPath, ["add", "-A"]); await git(repoPath, ["commit", "-m", order.title]); } catch {} // capture anything still uncommitted
+  if (branch.startsWith("jarvis/")) await finalizePR(order, repoPath, branch, order.summary || "Completed in a live session.");
+  else { order.status = "done"; order.summary = `Committed on ${branch}. Push & PR from there when ready.`; order.lastActivity = null; writeOrder(order); notify(`Jarvis · ${order.repo}`, `${order.title} — committed on ${branch}`); }
 }
 
 // ---------- land the work: merge → auto-sync local main → cleanup (no command line) ----------
@@ -384,10 +383,22 @@ function cleanupWorktree(order, repoPath) {
 }
 async function landOrder(order, repoPath, doMerge) {
   if (doMerge) { try { await gh(repoPath, ["pr", "merge", order.branch, "--squash", "--delete-branch"]); } catch (e) { broadcast({ type: "toast", title: order.repo, body: "Merge failed: " + String(e?.message || e).slice(0, 120), kind: "alert" }); return; } }
-  const s = await syncLocal(repoPath);
-  cleanupWorktree(order, repoPath);
+  let msg;
+  if (order.inPlace) { // live session worked in your real checkout, on the feature branch — bring you back to a synced main
+    try {
+      const def = await defaultBranch(repoPath);
+      if (!(await git(repoPath, ["status", "--porcelain"])).stdout.trim()) {
+        await git(repoPath, ["checkout", def]); await git(repoPath, ["pull", "--ff-only"]); git(repoPath, ["branch", "-D", order.branch]).catch(() => {});
+        msg = `✓ ${order.title} merged — back on ${def}, synced (simulator will reload)`;
+      } else msg = `✓ ${order.title} merged — you have uncommitted work; switch to ${def} + pull when ready`;
+    } catch { msg = `✓ ${order.title} merged`; }
+  } else { // autonomous worktree path
+    const s = await syncLocal(repoPath);
+    cleanupWorktree(order, repoPath);
+    msg = s.synced ? `✓ ${order.title} merged — local ${s.def} synced` : `✓ ${order.title} merged — \`git pull\` when ready (${s.reason})`;
+  }
   order.status = "archived"; order.merged = true; order.lastActivity = null; writeOrder(order);
-  notify(`Jarvis · ${order.repo}`, s.synced ? `✓ ${order.title} merged — local ${s.def} synced` : `✓ ${order.title} merged — \`git pull\` when ready (${s.reason})`);
+  notify(`Jarvis · ${order.repo}`, msg);
 }
 async function mergeOrder(id) { // explicit "Merge & sync" button
   const order = readOrder(id);
