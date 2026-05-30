@@ -689,8 +689,8 @@ let t = 0, dimCur = 1;
   g.fillStyle = bloom; g.fillRect(0,0,w,h);
   // halos
   for (let i=4;i>=0;i--){ g.beginPath(); g.arc(cx,cy,R+i*base*0.15,0,Math.PI*2); g.fillStyle=mix(0.05+(4-i)*0.012); g.fill(); }
-  // glowing core
-  const core = g.createRadialGradient(cx-R*0.32,cy-R*0.36,R*0.05,cx,cy,R);
+  // glowing core (gently off-center highlight = lit 3D sphere, but balanced inside the reticle)
+  const core = g.createRadialGradient(cx-R*0.16,cy-R*0.18,R*0.05,cx,cy,R);
   core.addColorStop(0, `rgba(${Math.min(255,rgb[0]+150)},${Math.min(255,rgb[1]+90)},${Math.min(255,rgb[2]+40)},0.95)`);
   core.addColorStop(0.35,mix(.55)); core.addColorStop(0.75,mix(.18)); core.addColorStop(1,mix(.05));
   g.beginPath(); g.arc(cx,cy,R,0,Math.PI*2); g.fillStyle=core; g.fill();
@@ -726,7 +726,7 @@ let t = 0, dimCur = 1;
     const px=cx+Math.cos(p.a)*rr, py=cy+Math.sin(p.a)*rr*0.96, sz=(0.6+p.z*1.8)*(w*0.0016);
     g.beginPath(); g.arc(px,py,sz,0,Math.PI*2); g.fillStyle=mix(0.18+p.z*0.5); g.fill(); }
   // specular highlight
-  const hl = g.createRadialGradient(cx-R*0.34,cy-R*0.4,0,cx-R*0.34,cy-R*0.4,R*0.5);
+  const hl = g.createRadialGradient(cx-R*0.18,cy-R*0.2,0,cx-R*0.18,cy-R*0.2,R*0.52);
   hl.addColorStop(0,"rgba(255,255,255,0.5)"); hl.addColorStop(1,"rgba(255,255,255,0)");
   g.beginPath(); g.arc(cx,cy,R,0,Math.PI*2); g.fillStyle=hl; g.fill();
   // wake flare: a ring that ripples outward and fades as it answers to its name
