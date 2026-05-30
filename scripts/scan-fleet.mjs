@@ -6,10 +6,13 @@ import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from "
 import { execFileSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import "../bridge/env.mjs"; // load jarvis/.env so JARVIS_PROJECTS works for manual `pnpm scan` too
 
 const ROOT = process.env.PROJECTS_ROOT || join(process.env.HOME, "Documents/projects");
 const SELF = "jarvis";
 const IGNORE = new Set(["node_modules", ".git", ".DS_Store", "drive", SELF]);
+// global allowlist: only these project dirs enter the fleet (empty = all). Set in jarvis/.env.
+const ALLOW = (process.env.JARVIS_PROJECTS || "").split(",").map((s) => s.trim()).filter(Boolean);
 const HUB = join(dirname(fileURLToPath(import.meta.url)), "..", "hub");
 
 const git = (cwd, args) => {
@@ -38,7 +41,7 @@ function describe(dir) {
 }
 
 const projects = readdirSync(ROOT, { withFileTypes: true })
-  .filter((d) => d.isDirectory() && !IGNORE.has(d.name) && !d.name.startsWith("."))
+  .filter((d) => d.isDirectory() && !IGNORE.has(d.name) && !d.name.startsWith(".") && (!ALLOW.length || ALLOW.includes(d.name)))
   .map((d) => {
     const dir = join(ROOT, d.name);
     const isRepo = existsSync(join(dir, ".git"));
