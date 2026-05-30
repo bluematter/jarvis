@@ -425,7 +425,7 @@ let WAKE_MODE = localStorage.getItem("jarvisWake") === "1"; // hands-free: VAD c
 function clapLoop() {
   let lastClap = 0, claps = 0, prev = 0;
   let vad = false, silence = 0;
-  const VSTART = 30, VEND = 15, VHANG = 18; // speech-onset / silence peak (0-128) + ~720ms silence to end
+  const VSTART = 16, VEND = 9, VHANG = 18; // speech-onset / silence peak (0-128) + ~720ms silence to end
   setInterval(() => {
     if (!micAnalyser) return;
     micAnalyser.getByteTimeDomainData(tmp);
@@ -452,7 +452,7 @@ function readPeak(an) {
 }
 
 // ---------- push to talk ----------
-talk.onmousedown = startListen; talk.onmouseup = stopListen; talk.onmouseleave = () => listening && stopListen();
+talk.onmousedown = () => startListen(); talk.onmouseup = stopListen; talk.onmouseleave = () => listening && stopListen();
 talk.ontouchstart = (e) => { e.preventDefault(); startListen(); };
 talk.ontouchend = (e) => { e.preventDefault(); stopListen(); };
 const typing = (e) => e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA";

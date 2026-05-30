@@ -248,7 +248,9 @@ wss.on("connection", (ws) => {
       }
       lastSttMs = Date.now() - stStt;
       if (gate === "wake") { // hands-free: only act if addressed to Jarvis; strip the wake phrase
-        if (!/\bjarvis\b/i.test(text)) return send({ type: "idle" });
+        const hit = /\bjarvis\b/i.test(text);
+        console.log(`[wake] heard "${text}" -> ${hit ? "RUN" : "ignored (no wake word)"}`);
+        if (!hit) return send({ type: "idle" });
         text = text.replace(/^.*?\bjarvis\b['’s]*[\s,.:!?-]*/i, "").trim();
         if (!text) return send({ type: "idle" }); // bare "hey jarvis" with no command
       }
