@@ -256,7 +256,7 @@ const STATE_COLOR = { idle:"#2878a0", connecting:"#2878a0", offline:"#ff5a5a", l
 // ---------- clock ----------
 function tickClock() {
   const n = new Date();
-  $("clkTime").textContent = String(n.getHours()).padStart(2,"0") + ":" + String(n.getMinutes()).padStart(2,"0");
+  $("clkTime").textContent = String(n.getHours()).padStart(2,"0") + ":" + String(n.getMinutes()).padStart(2,"0") + ":" + String(n.getSeconds()).padStart(2,"0");
   $("clkDate").textContent = n.toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"}).toUpperCase();
 }
 tickClock(); setInterval(tickClock, 1000);
