@@ -52,6 +52,17 @@ STT and TTS both run **on your machine as ONNX in Node — no Python, no cloud, 
 
 Models download once on first run (~150 MB total) to the HF cache, then run locally. Configure model/voice/quality in `.env`. **Barge-in** is on — clap or hold Space while Jarvis is talking and he stops to listen.
 
+## Voice pipeline
+
+The full voice path is **local, free, and offline** — every stage runs in-process via `onnxruntime-node`, with no cloud or API calls:
+
+- **Wake word:** [openWakeWord](https://github.com/dscripka/openWakeWord) listens for "Hey Jarvis" to start a turn.
+- **Endpointing:** [Silero VAD](https://github.com/snakers4/silero-vad) does neural speech detection to catch where you start and stop talking.
+- **End-of-turn:** the [LiveKit turn-detector](https://github.com/livekit/agents) model decides *semantically* when you're actually done speaking (not just paused).
+- **STT → TTS:** Whisper transcribes, Kokoro speaks the reply (see above).
+
+No Python, no keys, no network — the entire loop stays on your machine.
+
 ## Business data (RevenueCat · GSC · PostHog)
 
 Jarvis pulls revenue and search data through MCP servers and **caches summaries to `hub/metrics/`** so it answers instantly. The servers are registered in your user scope (so every project can use them too); the bridge picks them up automatically.
