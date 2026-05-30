@@ -198,6 +198,26 @@
   .sbtn:hover { background: rgba(56,225,255,.2); color: #02121a; }
   .sbtn.on { background: rgba(255,180,84,.22); border-color: #ffb454; color: #ffb454; }
   .sbtn.sx:hover { background: rgba(255,90,90,.2); border-color: #ff7a7a; color: #ff7a7a; }
+  /* Routines panel */
+  .chip.brief.rtdue { border-color: #ffb454; color: #ffb454; }
+  .rtadd { display: flex; gap: 8px; margin: 16px 22px 6px; }
+  .rtadd .search { flex: 1; margin: 0; width: auto; }
+  .rtsel { background: rgba(8,18,28,.8); border: 1px solid rgba(56,225,255,.2); color: #cfeefb; border-radius: 8px; padding: 0 10px; font-family: var(--font); font-size: .8rem; cursor: pointer; }
+  .rthead { font-family: var(--mono); font-size: .62rem; letter-spacing: .1em; text-transform: uppercase; color: #4a6675; margin: 14px 0 2px; }
+  .rt { display: flex; align-items: flex-start; gap: 12px; background: rgba(8,18,28,.7); border: 1px solid rgba(56,225,255,.1); border-radius: 9px; padding: 12px 14px; }
+  .rt.due { border-left: 3px solid #ffb454; }
+  .rt.rtdone { opacity: .5; }
+  .rtcheck { flex: none; width: 24px; height: 24px; border-radius: 7px; border: 1.5px solid rgba(56,225,255,.35); background: transparent; color: #7dffc8; font-size: .9rem; cursor: pointer; margin-top: 1px; transition: .12s; }
+  .rtcheck:hover { border-color: #7dffc8; }
+  .rtcheck.on { background: rgba(120,255,200,.85); border-color: #7dffc8; color: #02121a; }
+  .rtbody { flex: 1; min-width: 0; }
+  .rt .rttext { font-size: .9rem; color: #e8f8ff; line-height: 1.4; }
+  .rt.rtdone .rttext { text-decoration: line-through; }
+  .rtmeta { display: flex; gap: 7px; align-items: center; margin-top: 7px; }
+  .rtproj { font-family: var(--mono); font-size: .58rem; letter-spacing: .06em; text-transform: uppercase; color: var(--c); background: rgba(56,225,255,.08); padding: 2px 7px; border-radius: 5px; }
+  .rtcad { font-family: var(--mono); font-size: .58rem; color: #5d8294; text-transform: capitalize; }
+  .rtstreak { font-size: .62rem; color: #ffb454; }
+  .rtacts { display: flex; gap: 6px; flex: none; }
   .kcard { position: relative; background: rgba(8,18,28,.8); border: 1px solid rgba(56,225,255,.12); border-radius: 9px; padding: 12px 13px; animation: pop .25s ease; }
   .kcard .kx { position: absolute; top: 6px; right: 7px; width: 20px; height: 20px; line-height: 18px; text-align: center; border-radius: 5px; border: 0; background: transparent; color: #4a6675; font-size: 1.05rem; cursor: pointer; opacity: 0; transition: .15s; }
   .kcard:hover .kx { opacity: 1; }
@@ -259,6 +279,7 @@
         <span class="chip brief" id="wakeBtn" title="Hands-free &quot;Hey Jarvis&quot; (press J)">🎙 Hey-Jarvis</span>
         <span class="chip brief" id="voiceBtn" title="Toggle voice — Daniel ↔ George (press V)">🔊 Daniel</span>
         <span class="chip brief" id="sparksBtn" title="Idea dumps — triage daily (press I)">💡 Sparks</span>
+        <span class="chip brief" id="routinesBtn" title="Recurring daily tasks (press R)">🔁 Routines</span>
       </div>
       <div class="clk"><div class="time" id="clkTime">--:--</div><div class="date" id="clkDate"></div></div>
     </div>
@@ -292,6 +313,17 @@
     <div class="board-h"><span>💡 Sparks <em>— dump now, triage daily</em></span><a id="sparksClose" title="Close (Esc)">✕</a></div>
     <input id="sparkInput" class="search sparkadd" placeholder='Dump an idea…  ↵   (or say "Hey Jarvis, idea: …")' autocomplete="off" />
     <div class="sparklist" id="sparklist"></div>
+  </div>
+</div>
+<div id="routines" class="board" hidden>
+  <div class="board-card spark-card">
+    <div class="board-h"><span>🔁 Routines <em>— recurring tasks, reminded daily</em></span><a id="routinesClose" title="Close (Esc)">✕</a></div>
+    <div class="rtadd">
+      <input id="rtInput" class="search" placeholder="Add a recurring task…  ↵" autocomplete="off" />
+      <select id="rtCad" class="rtsel"><option value="daily">Daily</option><option value="weekdays">Weekdays</option><option value="weekly">Weekly</option></select>
+      <select id="rtProj" class="rtsel"><option value="">No project</option><option value="eatiq">BasedHealth</option><option value="wireflow">Wireflow</option><option value="gluely-app">Gluely</option><option value="rizz">Rizzly</option><option value="basedlabs-hub">BasedLabs</option></select>
+    </div>
+    <div class="sparklist" id="rtlist"></div>
   </div>
 </div>
 <div id="toasts" class="toasts"></div>
@@ -673,6 +705,53 @@ addEventListener("keydown", (e) => {
   if ((e.key === "i" || e.key === "I") && !typing(e)) { e.preventDefault(); sparks.hidden ? openSparks() : closeSparks(); }
   else if (e.key === "Escape" && !sparks.hidden) closeSparks();
 });
+
+// ---------- Routines: recurring daily tasks ----------
+const routines = $("routines"), routinesBtn = $("routinesBtn"), rtInput = $("rtInput"), rtlist = $("rtlist");
+let rtPoll = null, allRoutines = [], lastRtSig = "";
+function routineCard(r) {
+  const done = r.lastDone === todayDate();
+  return `<div class="rt ${r.due ? "due" : ""} ${done ? "rtdone" : ""}">
+    <button class="rtcheck ${done ? "on" : ""}" data-rtdone="${escape(r.id)}" title="${done ? "Undo" : "Mark done today"}">${done ? "✓" : ""}</button>
+    <div class="rtbody"><div class="rttext">${escape(r.text)}</div>
+      <div class="rtmeta">${r.project ? `<span class="rtproj">${escape(repoLabel(r.project))}</span>` : ""}<span class="rtcad">${escape(r.cadence)}</span>${r.streak ? `<span class="rtstreak">🔥 ${r.streak}</span>` : ""}</div></div>
+    <div class="rtacts"><button class="sbtn" data-rtticket="${escape(r.id)}" title="Dispatch as a work-order">→ Ticket</button><button class="sbtn sx" data-rtdel="${escape(r.id)}" title="Delete">×</button></div></div>`;
+}
+function renderRoutines() {
+  const today = todayDate();
+  const due = allRoutines.filter((r) => r.due), done = allRoutines.filter((r) => !r.due && r.lastDone === today), later = allRoutines.filter((r) => !r.due && r.lastDone !== today);
+  const sec = (t, l) => l.length ? `<div class="rthead">${t}</div>` + l.map(routineCard).join("") : "";
+  rtlist.innerHTML = allRoutines.length ? sec(`Due today · ${due.length}`, due) + sec("Done today", done) + sec("Scheduled", later)
+    : `<div class="kempty">No routines yet — add one above, or say "Hey Jarvis, daily task: …"</div>`;
+  wireRoutines();
+}
+function wireRoutines() {
+  rtlist.querySelectorAll("[data-rtdone]").forEach((b) => (b.onclick = () => { const r = allRoutines.find((x) => x.id === b.dataset.rtdone); const done = r && r.lastDone === todayDate(); routineSet(b.dataset.rtdone, done ? { type: "routine-done", done: false } : { type: "routine-done", done: true }); }));
+  rtlist.querySelectorAll("[data-rtdel]").forEach((b) => (b.onclick = () => { allRoutines = allRoutines.filter((r) => r.id !== b.dataset.rtdel); if (wsReady) ws.send(JSON.stringify({ type: "routine-del", id: b.dataset.rtdel })); renderRoutines(); }));
+  rtlist.querySelectorAll("[data-rtticket]").forEach((b) => (b.onclick = () => { if (wsReady) ws.send(JSON.stringify({ type: "routine-ticket", id: b.dataset.rtticket })); setTimeout(refreshRoutines, 200); }));
+}
+function routineSet(id, msg) { if (wsReady) ws.send(JSON.stringify({ ...msg, id })); setTimeout(refreshRoutines, 150); }
+async function refreshRoutines() {
+  try { allRoutines = await (await fetch("/routines", { cache: "no-store" })).json(); } catch { return; }
+  const dueN = allRoutines.filter((r) => r.due).length;
+  routinesBtn.textContent = "🔁 Routines" + (dueN ? " · " + dueN : "");
+  routinesBtn.classList.toggle("rtdue", dueN > 0);
+  if (!routines.hidden) { const sig = JSON.stringify(allRoutines); if (sig !== lastRtSig) { lastRtSig = sig; renderRoutines(); } }
+}
+function openRoutines() { routines.hidden = false; lastRtSig = ""; refreshRoutines(); rtPoll = setInterval(refreshRoutines, 2500); setTimeout(() => rtInput.focus(), 60); }
+function closeRoutines() { routines.hidden = true; if (rtPoll) { clearInterval(rtPoll); rtPoll = null; } }
+routinesBtn.onclick = () => (routines.hidden ? openRoutines() : closeRoutines());
+$("routinesClose").onclick = closeRoutines;
+rtInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && rtInput.value.trim()) { if (wsReady) ws.send(JSON.stringify({ type: "routine-add", text: rtInput.value.trim(), cadence: $("rtCad").value, project: $("rtProj").value })); rtInput.value = ""; setTimeout(refreshRoutines, 180); }
+  else if (e.key === "Escape") { e.preventDefault(); closeRoutines(); }
+});
+addEventListener("keydown", (e) => {
+  if ((e.key === "r" || e.key === "R") && !typing(e)) { e.preventDefault(); routines.hidden ? openRoutines() : closeRoutines(); }
+  else if (e.key === "Escape" && !routines.hidden) closeRoutines();
+});
+const todayDate = () => new Date().toISOString().slice(0, 10);
+refreshRoutines(); setInterval(refreshRoutines, 60000); // keep the chip's due-count fresh
 const REPO_LABEL = { wireflow: "Wireflow", "gluely-app": "Gluely", eatiq: "BasedHealth", "eatiq-mobile": "BasedHealth", rizz: "Rizzly", "basedlabs-hub": "BasedLabs" };
 const MAIN_PROJECTS = ["wireflow", "gluely-app", "eatiq", "rizz", "basedlabs-hub"]; // always-shown focus filters
 const repoLabel = (r) => REPO_LABEL[r] || r;

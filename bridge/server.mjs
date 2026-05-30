@@ -82,6 +82,11 @@ const httpServer = createServer(async (req, res) => {
     res.end(JSON.stringify(readSparks()));
     return;
   }
+  if (req.url.split("?")[0] === "/routines") {
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify(routinesWithDue()));
+    return;
+  }
   if (req.url.split("?")[0] === "/orders") {
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
     res.end(JSON.stringify(listOrders()));
@@ -127,7 +132,9 @@ const briefPrompt = () => {
     : h < 17 ? "It is the afternoon — open with 'Good afternoon, sir.'"
     : h < 22 ? "It is the evening — open with 'Good evening, sir.'"
     : "It is late at night — do NOT say 'good morning'; open with a wry nod to the late hour, e.g. 'Up late, sir.'";
-  return `Give me a SPOKEN briefing in 3-4 natural sentences. ${greet} Read metrics/_digest.md (ONE file — revenue + fleet; do not run live queries). Lead with the revenue headline across Gluely, BasedHealth and Wireflow with the actual numbers. Then call out anything that looks OFF — a product with paying subscribers but ZERO trials (a broken trial funnel), trials piling up without converting, or a project with uncommitted work sitting for days. Close with the single most important thing to focus on today. Then, if state/sparks.json exists, glance at it (my idea inbox) — if any spark has "today": true, mention that one as an idea I flagged to prioritize. Be a sharp COO: specific and numbers-driven, address me as "sir" once, no lists, no markdown — you're speaking to me.`;
+  const dueR = routinesWithDue().filter((r) => r.due);
+  const rLine = dueR.length ? ` I have ${dueR.length} recurring task${dueR.length > 1 ? "s" : ""} due today — remind me to ${dueR.map((r) => r.text + (r.project ? ` (${r.project})` : "")).join("; then ")}.` : "";
+  return `Give me a SPOKEN briefing in 3-4 natural sentences. ${greet} Read metrics/_digest.md (ONE file — revenue + fleet; do not run live queries). Lead with the revenue headline across Gluely, BasedHealth and Wireflow with the actual numbers. Then call out anything that looks OFF — a product with paying subscribers but ZERO trials (a broken trial funnel), trials piling up without converting, or a project with uncommitted work sitting for days. Close with the single most important thing to focus on today.${rLine} Then, if state/sparks.json exists, glance at it (my idea inbox) — if any spark has "today": true, mention that one as an idea I flagged to prioritize. Be a sharp COO: specific and numbers-driven, address me as "sir" once, no lists, no markdown — you're speaking to me.`;
 };
 
 // ---------- proactive alerts: surface things WITHOUT being asked ----------
@@ -164,6 +171,10 @@ function runAlerts() {
     const fleet = readJSON(join(HUB, "fleet.json"), null);
     const st = readJSON(ALERTS_FILE, { snapshot: {}, sent: {} });
     const { alerts, snapshot } = computeAlerts(cards, fleet, st.snapshot);
+    // afternoon nudge: recurring tasks still not done today
+    const dueR = routinesWithDue().filter((r) => r.due);
+    if (dueR.length && new Date().getHours() >= 14)
+      alerts.push({ id: `routines:${todayStr()}`, cooldown: 5 * HR, title: `${dueR.length} task${dueR.length > 1 ? "s" : ""} still due today`, body: dueR.slice(0, 3).map((r) => r.text).join(" · ") });
     const now = Date.now(), sent = st.sent || {}, hasClient = [...wss.clients].some((c) => c.readyState === 1);
     for (const a of alerts) {
       if (sent[a.id] && now - sent[a.id] < a.cooldown) continue; // deduped within its cooldown
@@ -239,6 +250,38 @@ function sparkToOrder(id, repo) { // promote a spark into a proposed work-order 
   writeOrder({ id: oid, repo: (repo || "").trim(), title, brief: s.text, status: "proposed", createdAt: new Date().toISOString(), fromSpark: id });
   updateSpark(id, { status: "ticketed" });
   broadcast({ type: "toast", title: "Spark → ticket", body: title });
+}
+
+// ---------- Routines: recurring tasks Jarvis reminds you about + tracks daily ----------
+const ROUTINES_FILE = join(STATE, "routines.json");
+const readRoutines = () => readJSON(ROUTINES_FILE, []) || [];
+const writeRoutines = (l) => { try { writeFileSync(ROUTINES_FILE, JSON.stringify(l, null, 2)); } catch {} };
+function addRoutine(text, project = "", cadence = "daily") {
+  text = String(text || "").trim(); if (!text) return null;
+  const l = readRoutines();
+  const r = { id: "rt-" + Math.random().toString(36).slice(2, 9), text, project: project || "", cadence: cadence || "daily", lastDone: "", streak: 0, created: new Date().toISOString() };
+  l.push(r); writeRoutines(l); return r;
+}
+const updateRoutine = (id, patch) => { const l = readRoutines(); const r = l.find((x) => x.id === id); if (r) { Object.assign(r, patch); writeRoutines(l); } };
+const delRoutine = (id) => writeRoutines(readRoutines().filter((x) => x.id !== id));
+function routineDue(r) {
+  if (r.lastDone === todayStr()) return false; // already done today
+  const dow = new Date().getDay(); // 0 Sun .. 6 Sat
+  if (r.cadence === "weekdays") return dow >= 1 && dow <= 5;
+  if (r.cadence === "weekly") return !r.lastDone || (Date.now() - new Date(r.lastDone + "T12:00:00").getTime()) / 86400e3 >= 7;
+  return true; // daily
+}
+function markRoutineDone(id, done) {
+  const l = readRoutines(); const r = l.find((x) => x.id === id); if (!r) return;
+  if (done) { if (r.lastDone !== todayStr()) r.streak = (r.streak || 0) + 1; r.lastDone = todayStr(); }
+  else { r.lastDone = ""; if (r.streak) r.streak--; }
+  writeRoutines(l);
+}
+const routinesWithDue = () => readRoutines().map((r) => ({ ...r, due: routineDue(r) }));
+function routineToOrder(id) {
+  const r = readRoutines().find((x) => x.id === id); if (!r) return;
+  writeOrder({ id: "routine-" + Date.now().toString(36), repo: r.project || "", title: r.text.slice(0, 80), brief: r.text, status: "proposed", createdAt: new Date().toISOString(), fromRoutine: id });
+  broadcast({ type: "toast", title: "Routine → ticket", body: r.text.slice(0, 80) });
 }
 
 function dispatchPrompt(order, branch) {
@@ -584,6 +627,11 @@ wss.on("connection", (ws) => {
     if (msg.type === "spark-set" && msg.id) { updateSpark(msg.id, msg.patch || {}); return; }
     if (msg.type === "spark-del" && msg.id) { delSpark(msg.id); return; }
     if (msg.type === "spark-ticket" && msg.id) { sparkToOrder(msg.id, msg.repo); return; }
+    if (msg.type === "routine-add" && msg.text) { addRoutine(msg.text, msg.project, msg.cadence); return; }
+    if (msg.type === "routine-done" && msg.id) { markRoutineDone(msg.id, msg.done !== false); return; }
+    if (msg.type === "routine-set" && msg.id) { updateRoutine(msg.id, msg.patch || {}); return; }
+    if (msg.type === "routine-del" && msg.id) { delRoutine(msg.id); return; }
+    if (msg.type === "routine-ticket" && msg.id) { routineToOrder(msg.id); return; }
     if (msg.type === "dispatch" && msg.id) { dispatchOrder(msg.id); return; } // fire-and-forget; HUD polls /orders
     if (msg.type === "go-live" && msg.id) { liveDispatch(msg.id); return; }    // escape hatch: interactive Terminal + Zed
     if (msg.type === "finish-live" && msg.id) { finishLive(msg.id); return; }  // close the live session -> PR
@@ -762,14 +810,20 @@ wss.on("connection", (ws) => {
     send({ type: "speak-end" });
   }
   const SPARK_RE = /^\s*(?:spark|idea|new idea|note to self|note:|remember (?:this|that|to)|don'?t forget(?: to)?)\b[:,\-\s]*(.+)/is;
+  const ROUTINE_RE = /^\s*(?:daily task|routine|recurring task|remind me (?:daily|every ?day|each day)(?: to)?|every ?day)\b[:,\-\s]*(.+)/is;
+  const capture = (text, prompt, line) => { send({ type: "transcript", text: prompt }); send({ type: "result", text: line }); return say(line.replace(/\.$/, ", sir.")); };
   const runTurn = (prompt) => {
+    const rm = ROUTINE_RE.exec(prompt);
+    if (rm && rm[1].trim().length > 2) { // recurring task
+      addRoutine(rm[1].trim(), "", "daily");
+      broadcast({ type: "toast", title: "🔁 Daily routine added", body: rm[1].trim().slice(0, 90) });
+      return capture(rm[1].trim(), prompt, "Added to your daily routines.");
+    }
     const m = SPARK_RE.exec(prompt);
-    if (m && m[1].trim().length > 2) { // it's an idea dump, not a command
+    if (m && m[1].trim().length > 2) { // idea dump
       addSpark(m[1].trim());
-      send({ type: "transcript", text: prompt });
-      send({ type: "result", text: "Logged that spark, sir." });
       broadcast({ type: "toast", title: "💡 Spark saved", body: m[1].trim().slice(0, 90) });
-      return say("Logged, sir.");
+      return capture(m[1].trim(), prompt, "Logged that spark.");
     }
     return speakTurn(prompt, prompt);
   };
