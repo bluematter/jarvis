@@ -11,7 +11,7 @@ import { join, extname } from "node:path";
 import { WebSocketServer } from "ws";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { ROOT } from "./env.mjs"; // loads .env into process.env (must be first)
-import { warmVoice, transcribe, speak } from "./voice.mjs";
+import { warmVoice, transcribe, synth } from "./voice.mjs";
 
 const HUD_DIR = join(ROOT, "hud");
 const env = process.env;
@@ -272,54 +272,60 @@ wss.on("connection", (ws) => {
     }
   }
 
-  // shared: run the conversational agent, streaming deltas + tool calls; returns final text
-  async function runAgent(prompt) {
-    let finalText = "";
-    const stream = query({
-      prompt,
-      options: {
-        cwd: HUB,
-        model: MODEL,
-        permissionMode: PERMISSION_MODE,
-        settingSources: ["user", "project"], // loads hub CLAUDE.md + your MCP servers
-        includePartialMessages: true,
-        ...(sessionId ? { resume: sessionId } : {}),
-      },
-    });
-    for await (const ev of stream) {
-      if (ev.session_id) sessionId = ev.session_id;
-      if (ev.type === "stream_event") {
-        const d = ev.event?.delta;
-        if (d?.type === "text_delta" && d.text) send({ type: "delta", text: d.text });
-      } else if (ev.type === "assistant") {
-        for (const block of ev.message?.content || []) {
-          if (block.type === "tool_use") send({ type: "tool", name: block.name, input: summarizeInput(block.input) });
-        }
-      } else if (ev.type === "result") finalText = ev.result || finalText;
-    }
-    return finalText.trim();
-  }
-
-  // a spoken turn: youLabel is what shows in history, prompt is what the agent runs
+  // a spoken turn: streams the answer AND synthesizes each sentence the moment it's ready, so the
+  // first audio goes out while the rest of the reply is still being generated (much lower latency).
   async function speakTurn(youLabel, prompt) {
     if (busy) return send({ type: "busy" });
     busy = true;
     appendTurn("you", youLabel);
     send({ type: "thinking" });
+    let finalText = "", pending = "", startedSpeaking = false, queued = 0;
+    let ttsChain = Promise.resolve();
+    const enqueueTTS = (s) => { // sequential: preserves sentence order, pipelines with generation
+      const t = s.trim(); if (!t) return; queued++;
+      ttsChain = ttsChain.then(() => synth(t)).then((b) => {
+        if (!b) return;
+        if (!startedSpeaking) { startedSpeaking = true; send({ type: "speak-start" }); }
+        sendAudio(b);
+      }).catch(() => {});
+    };
+    const pull = (final) => { // pull complete sentences (terminator + following space) out of `pending`
+      let m;
+      while ((m = /^([\s\S]*?[.!?]+)\s+/.exec(pending))) { enqueueTTS(m[1]); pending = pending.slice(m[0].length); }
+      if (final && pending.trim()) { enqueueTTS(pending); pending = ""; }
+    };
     try {
-      const finalText = await runAgent(prompt);
+      const stream = query({
+        prompt,
+        options: {
+          cwd: HUB, model: MODEL, permissionMode: PERMISSION_MODE,
+          settingSources: ["user", "project"], includePartialMessages: true,
+          ...(sessionId ? { resume: sessionId } : {}),
+        },
+      });
+      for await (const ev of stream) {
+        if (ev.session_id) sessionId = ev.session_id;
+        if (ev.type === "stream_event") {
+          const d = ev.event?.delta;
+          if (d?.type === "text_delta" && d.text) { send({ type: "delta", text: d.text }); pending += d.text; pull(false); }
+        } else if (ev.type === "assistant") {
+          for (const b of ev.message?.content || []) if (b.type === "tool_use") send({ type: "tool", name: b.name, input: summarizeInput(b.input) });
+        } else if (ev.type === "result") finalText = ev.result || finalText;
+      }
+      finalText = (finalText || "").trim();
+      if (!queued && !pending && finalText) pending = finalText; // no deltas streamed → speak the result
+      pull(true);
       appendTurn("jarvis", finalText);
       saveSession(sessionId);
       send({ type: "result", text: finalText });
-      if (finalText) { // speak it — local Kokoro, streamed per sentence
-        send({ type: "speak-start" });
-        try { await speak(finalText, sendAudio); } catch (err) { send({ type: "error", text: "TTS: " + (err?.message || err) }); }
-        send({ type: "speak-end" });
-      }
+      await ttsChain; // wait for every sentence to be synthesized + sent, in order
+      send(startedSpeaking ? { type: "speak-end" } : { type: "idle" });
     } catch (err) {
       const m = String(err?.message || err);
       if (sessionId && /session|resume|not\s*found|no such/i.test(m)) { clearSession(); sessionId = null; } // stale resume
       send({ type: "error", text: m });
+      try { await ttsChain; } catch {}
+      if (startedSpeaking) send({ type: "speak-end" });
     } finally {
       busy = false;
     }

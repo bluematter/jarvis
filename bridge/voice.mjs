@@ -41,6 +41,14 @@ export async function transcribe(audio) {
   return (out?.text || "").trim();
 }
 
+// Synthesize one piece of text to a single WAV Buffer (used for streaming TTS:
+// the bridge feeds one sentence at a time as the LLM produces them).
+export async function synth(text) {
+  await warmVoice();
+  const audio = await tts.generate(text, { voice, speed });
+  return Buffer.from(audio.toWav());
+}
+
 // Streams one WAV Buffer per sentence to onChunk so playback starts before
 // the whole reply is synthesized (lower perceived latency).
 export async function speak(text, onChunk) {
