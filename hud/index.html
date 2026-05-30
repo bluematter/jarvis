@@ -652,7 +652,13 @@ function wireSparks() {
   }));
 }
 function sparkSet(id, patch) { const s = allSparks.find((x) => x.id === id); if (s) Object.assign(s, patch); if (wsReady) ws.send(JSON.stringify({ type: "spark-set", id, patch })); renderSparks(); }
-async function refreshSparks() { try { allSparks = await (await fetch("/sparks", { cache: "no-store" })).json(); } catch { return; } renderSparks(); }
+let lastSparkSig = "";
+async function refreshSparks() {
+  try { allSparks = await (await fetch("/sparks", { cache: "no-store" })).json(); } catch { return; }
+  const sig = JSON.stringify(allSparks);
+  if (sig === lastSparkSig) return; // unchanged — don't re-render (this was the flicker)
+  lastSparkSig = sig; renderSparks();
+}
 function openSparks() { sparks.hidden = false; refreshSparks(); sparkPoll = setInterval(refreshSparks, 2500); setTimeout(() => sparkInput.focus(), 60); }
 function closeSparks() { sparks.hidden = true; if (sparkPoll) { clearInterval(sparkPoll); sparkPoll = null; } }
 sparksBtn.onclick = () => (sparks.hidden ? openSparks() : closeSparks());
@@ -848,6 +854,7 @@ function goalBar(c, st) {
   return `<div class="goalbar"><div class="gtrack"><div class="gfill${done ? " gdone" : ""}" style="width:${pct.toFixed(1)}%"></div></div>` +
     `<div class="gmeta"><span>${escape(String(tile.value))}</span><span>${Math.round(pct)}% <i>→ ${goalLbl}</i></span></div></div>`;
 }
+let lastCardsHtml = "";
 async function refreshState() {
   let st; try { st = await (await fetch("/state", { cache: "no-store" })).json(); } catch { return; }
   const out = [];
@@ -869,7 +876,8 @@ async function refreshState() {
       ${tiles ? `<div class="tiles">${tiles}</div>` : ""}${goalBar(c, st)}${c.note ? `<div class="note">${escape(c.note)}</div>` : ""}</div>`);
   }
   if (!out.length) out.push(`<div class="card muted"><div class="ct"><span class="sdot"></span>Dashboard</div><div class="note">Run <b>pnpm scan</b> and <b>pnpm metrics</b> to populate.</div></div>`);
-  cardsEl.innerHTML = out.join("");
+  const html = out.join("");
+  if (html !== lastCardsHtml) { cardsEl.innerHTML = html; lastCardsHtml = html; } // only repaint on change (was restarting animations / flickering)
   const stamps = [st.fleet?.updatedAt, st.metricsUpdatedAt].filter(Boolean).sort();
   stampEl.textContent = stamps.length ? "updated " + ago(stamps[stamps.length - 1]) : "";
 }
