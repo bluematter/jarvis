@@ -93,6 +93,7 @@
   .topbar .sys .chip { display: inline-flex; align-items: center; gap: 7px; }
   .topbar .sys .chip.brief { cursor: pointer; color: var(--c); border: 1px solid #123247; padding: 4px 11px; border-radius: 999px; transition: .15s; }
   .topbar .sys .chip.brief:hover { background: rgba(56,225,255,.1); border-color: var(--c); box-shadow: 0 0 16px rgba(56,225,255,.15); }
+  .topbar .sys .chip.brief.on { background: rgba(56,225,255,.18); border-color: var(--c); color: var(--c); box-shadow: 0 0 14px rgba(56,225,255,.22); }
   .topbar .clk { text-align: right; }
   .topbar .clk .time { font-family: var(--mono); font-size: 1.25rem; color: #e8f8ff; letter-spacing: .02em; line-height: 1; }
   .topbar .clk .date { font-family: var(--mono); font-size: .58rem; color: #4d6f7e; margin-top: 5px; letter-spacing: .14em; }
@@ -212,6 +213,7 @@
         <span class="chip" id="tbFleet"></span>
         <span class="chip brief" id="brief" title="Morning briefing (press B)">◐ Brief</span>
         <span class="chip brief" id="boardBtn" title="Work orders (press O)">⊞ Work</span>
+        <span class="chip brief" id="wakeBtn" title="Hands-free &quot;Hey Jarvis&quot; (press J)">🎙 Hey-Jarvis</span>
       </div>
       <div class="clk"><div class="time" id="clkTime">--:--</div><div class="date" id="clkDate"></div></div>
     </div>
@@ -364,8 +366,10 @@ async function initAudio() {
 addEventListener("visibilitychange", () => { if (!document.hidden && actx) actx.resume(); });
 addEventListener("focus", () => { if (actx) actx.resume(); });
 
-function startListen() {
+let currentGate = "none"; // "wake" when triggered hands-free (bridge gates on the word "jarvis")
+function startListen(gate) {
   if (!actx || listening || mode === "thinking") return;
+  currentGate = gate || "none";
   stopPlayback();
   listening = true; mode = "listening"; capturing = true; capBuf = [];
   talk.classList.add("live"); setState("listening", "Listening…");
@@ -376,7 +380,7 @@ function stopListen() {
   const pcm = mergeDownsample(capBuf, actx.sampleRate, 16000); capBuf = [];
   if (pcm.length < 2400) { mode = "idle"; setState("idle", "…"); return; }
   mode = "thinking"; setState("transcribing", "…");
-  if (wsReady) ws.send(pcm.buffer);
+  if (wsReady) { ws.send(JSON.stringify({ type: "utterance", gate: currentGate })); ws.send(pcm.buffer); }
 }
 function mergeDownsample(chunks, inRate, outRate) {
   let len = 0; for (const c of chunks) len += c.length;
@@ -415,10 +419,13 @@ async function playNext() {
 function stopPlayback() { aqueue = []; speakEnded = false; if (curSrc) { try { curSrc.onended = null; curSrc.stop(); } catch {} curSrc = null; } aplaying = false; }
 function finishSpeaking() { speakEnded = false; if (mode === "speaking") { mode = "idle"; setState("idle", caption.textContent); } }
 
-// ---------- mic level + (optional) double-clap wake ----------
+// ---------- mic level + double-clap wake (off) + hands-free "Hey Jarvis" VAD ----------
 const CLAP_WAKE = false;
+let WAKE_MODE = localStorage.getItem("jarvisWake") === "1"; // hands-free: VAD captures speech, bridge gates on "jarvis"
 function clapLoop() {
   let lastClap = 0, claps = 0, prev = 0;
+  let vad = false, silence = 0;
+  const VSTART = 30, VEND = 15, VHANG = 18; // speech-onset / silence peak (0-128) + ~720ms silence to end
   setInterval(() => {
     if (!micAnalyser) return;
     micAnalyser.getByteTimeDomainData(tmp);
@@ -430,6 +437,12 @@ function clapLoop() {
       if (claps >= 2) { claps = 0; startListen(); }
     }
     prev = peak;
+    // hands-free: capture a speech burst, send it wake-gated (bridge runs it only if it contains "jarvis")
+    if (WAKE_MODE) {
+      if (!vad) { if (mode === "idle" && peak > VSTART) { vad = true; silence = 0; startListen("wake"); } }
+      else if (mode === "listening") { if (peak < VEND) { if (++silence > VHANG) { vad = false; stopListen(); } } else silence = 0; }
+      else vad = false; // a turn (thinking/speaking) took over
+    } else vad = false;
   }, 40);
 }
 function readPeak(an) {
@@ -450,6 +463,17 @@ addEventListener("keyup", (e) => { if (e.code === "Space" && !typing(e)) { e.pre
 function sendBrief() { if (!wsReady || mode === "thinking") return; ws.send(JSON.stringify({ type: "brief" })); }
 briefBtn.onclick = sendBrief;
 addEventListener("keydown", (e) => { if ((e.key === "b" || e.key === "B") && !typing(e)) { e.preventDefault(); sendBrief(); } });
+
+// ---------- hands-free "Hey Jarvis" toggle ----------
+const wakeBtn = $("wakeBtn");
+function setWake(on) {
+  WAKE_MODE = on; try { localStorage.setItem("jarvisWake", on ? "1" : "0"); } catch {}
+  wakeBtn.classList.toggle("on", on);
+  wakeBtn.textContent = on ? "🎙 Hey-Jarvis ●" : "🎙 Hey-Jarvis";
+}
+wakeBtn.onclick = () => setWake(!WAKE_MODE);
+addEventListener("keydown", (e) => { if ((e.key === "j" || e.key === "J") && !typing(e)) { e.preventDefault(); setWake(!WAKE_MODE); } });
+setWake(WAKE_MODE); // reflect the persisted setting in the chip
 
 // ---------- work-order board (propose → approve → dispatch) ----------
 const board = $("board"), boardBtn = $("boardBtn");

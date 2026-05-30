@@ -223,6 +223,7 @@ wss.on("connection", (ws) => {
   let sessionId = lastSession; // resume the last conversation across HUD refreshes
   let busy = false;
   let lastSttMs = 0; // STT time of the most recent voice utterance, folded into the turn's timing line
+  let pendingGate = "none"; // "wake" = the next utterance must contain the wake word to run (hands-free VAD)
   const send = (obj) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(obj));
   const sendAudio = (buf) => ws.readyState === ws.OPEN && ws.send(buf, { binary: true });
 
@@ -235,6 +236,7 @@ wss.on("connection", (ws) => {
   ws.on("message", async (data, isBinary) => {
     // binary frame = recorded utterance (Float32 PCM @16k) -> transcribe -> run
     if (isBinary) {
+      const gate = pendingGate; pendingGate = "none";
       if (busy) return send({ type: "busy" });
       send({ type: "transcribing" });
       let text = "";
@@ -245,13 +247,19 @@ wss.on("connection", (ws) => {
         return send({ type: "error", text: "STT: " + (err?.message || err) });
       }
       lastSttMs = Date.now() - stStt;
+      if (gate === "wake") { // hands-free: only act if addressed to Jarvis; strip the wake phrase
+        if (!/\bjarvis\b/i.test(text)) return send({ type: "idle" });
+        text = text.replace(/^.*?\bjarvis\b['’s]*[\s,.:!?-]*/i, "").trim();
+        if (!text) return send({ type: "idle" }); // bare "hey jarvis" with no command
+      }
       send({ type: "transcript", text });
       if (!text) return send({ type: "idle" });
       return runTurn(text);
     }
-    // text frame = JSON control (typed prompt)
+    // text frame = JSON control (typed prompt / utterance gate)
     let msg;
     try { msg = JSON.parse(data.toString()); } catch { return; }
+    if (msg.type === "utterance") { pendingGate = msg.gate === "wake" ? "wake" : "none"; return; } // tags the next binary frame
     if (msg.type === "prompt" && msg.text?.trim()) return runTurn(msg.text);
     if (msg.type === "search" && msg.text?.trim()) return runSearch(msg.text);
     if (msg.type === "brief") return runBrief();
