@@ -13,7 +13,11 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { ROOT } from "./env.mjs"; // loads .env into process.env (must be first)
 import { warmVoice, transcribe, synth, setVoice, currentVoice } from "./voice.mjs";
 import { loadWakeWord, createDetector } from "./wakeword.mjs";
+import { loadSilero, createVAD } from "./silero.mjs";
 const WAKE_THRESHOLD = Number(process.env.JARVIS_WAKE_THRESHOLD || 0.5); // openWakeWord "hey jarvis" score to fire
+const END_SIL_MS = 650;    // Silero says speech, then this much true silence -> command done
+const NOSPEECH_MS = 6000;  // armed but nothing said -> give up
+const CMD_MAX_MS = 15000;  // hard cap on a single command
 
 const HUD_DIR = join(ROOT, "hud");
 const env = process.env;
@@ -258,7 +262,11 @@ wss.on("connection", (ws) => {
   const send = (obj) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(obj));
   const sendAudio = (buf) => ws.readyState === ws.OPEN && ws.send(buf, { binary: true });
   const detector = createDetector({ threshold: WAKE_THRESHOLD }); // per-connection openWakeWord state
-  let wakeChain = Promise.resolve(); // serialize async wake feeds so they don't race the rolling buffers
+  const vad = createVAD(); // per-connection Silero VAD, used to endpoint a command precisely
+  let wakeChain = Promise.resolve(); // serialize async wake/VAD feeds so they don't race their rolling buffers
+  let epActive = false, epSpeech = false, epStart = 0, epLastSpeech = 0; // command endpoint state
+  function startEndpoint() { epActive = true; epSpeech = false; epStart = Date.now(); epLastSpeech = 0; vad.reset(); detector.reset(); } // clear "hey jarvis" from the wake buffer so it can't re-fire when detection resumes
+  function endpoint() { if (!epActive) return; epActive = false; epSpeech = false; send({ type: "endpoint" }); } // tell the HUD the command is done
 
   send({ type: "ready", hub: HUB });
   send({ type: "history", items: recentTurns(30) }); // replay so the feed isn't blank on reload
@@ -270,11 +278,20 @@ wss.on("connection", (ws) => {
     if (isBinary) {
       const b = Buffer.isBuffer(data) ? data : Buffer.from(data);
       const tag = b.readInt32LE(0); // 1 = continuous wake-word stream · 0 = a captured command/utterance
-      if (tag === 1) { // openWakeWord stream: Int16 PCM @16k (int16 magnitude), detect "hey jarvis"
-        const n = (b.length - 4) >> 1, frame = new Float32Array(n);
-        for (let i = 0; i < n; i++) frame[i] = b.readInt16LE(4 + i * 2);
-        wakeChain = wakeChain.then(() => detector.feed(frame, Date.now())).then((fired) => {
-          if (fired) { console.log(`[wake] FIRE ${detector.score().toFixed(2)}`); send({ type: "wake-fire" }); }
+      if (tag === 1) { // continuous stream @16k Int16: openWakeWord (detect "hey jarvis") + Silero VAD (endpoint)
+        const n = (b.length - 4) >> 1, mag = new Float32Array(n), norm = new Float32Array(n);
+        for (let i = 0; i < n; i++) { const v = b.readInt16LE(4 + i * 2); mag[i] = v; norm[i] = v / 32768; }
+        wakeChain = wakeChain.then(async () => {
+          if (!epActive && !busy && await detector.feed(mag, Date.now())) {
+            console.log(`[wake] FIRE ${detector.score().toFixed(2)}`); send({ type: "wake-fire" }); startEndpoint();
+          }
+          if (epActive) { // endpoint the command: speech (Silero) then a short true silence
+            const p = await vad.feed(norm), now = Date.now();
+            if (p > 0.5) { epSpeech = true; epLastSpeech = now; }
+            if (epSpeech && now - epLastSpeech >= END_SIL_MS) endpoint();
+            else if (!epSpeech && now - epStart >= NOSPEECH_MS) endpoint();
+            else if (now - epStart >= CMD_MAX_MS) endpoint();
+          }
         }).catch(() => {});
         return;
       }
@@ -298,6 +315,7 @@ wss.on("connection", (ws) => {
     let msg;
     try { msg = JSON.parse(data.toString()); } catch { return; }
     if (msg.type === "voice" && msg.name) { if (setVoice(msg.name)) console.log(`[voice] -> ${msg.name}`); return; }
+    if (msg.type === "converse") { startEndpoint(); return; } // Jarvis finished speaking → endpoint the follow-up reply
     if (msg.type === "clientlog") { console.log(`[client] ${msg.msg}`); return; } // temporary: surface HUD playback events in the log
 
     if (msg.type === "prompt" && msg.text?.trim()) return runTurn(msg.text);
@@ -525,4 +543,5 @@ httpServer.listen(PORT, () => {
     log: (m) => console.log("  " + m),
   }).catch((e) => console.log("  voice FAILED: " + (e?.message || e)));
   loadWakeWord((m) => console.log("  " + m)).catch((e) => console.log("  wake FAILED: " + (e?.message || e)));
+  loadSilero((m) => console.log("  " + m)).catch((e) => console.log("  vad FAILED: " + (e?.message || e)));
 });
