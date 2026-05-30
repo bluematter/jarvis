@@ -175,6 +175,7 @@
   .kbtn { margin-top: 11px; width: 100%; padding: 8px; background: rgba(56,225,255,.1); border: 1px solid rgba(56,225,255,.3);
     color: var(--c); border-radius: 7px; font-family: var(--font); font-size: .8rem; cursor: pointer; transition: .15s; }
   .kbtn:hover { background: var(--c); color: #02121a; } .kbtn:disabled { opacity: .5; cursor: default; }
+  .kcard .krow { display: flex; gap: 8px; } .kcard .krow .kbtn { flex: 1; width: auto; }
   .kcard.kprog { border-color: rgba(180,120,255,.35); }
   .kcard .kact { display: flex; align-items: center; gap: 8px; font-size: .78rem; color: #b9a0e8; margin-top: 8px; }
   .kcard .kbranch { font-family: var(--mono); font-size: .62rem; color: #4d6f7e; margin-top: 7px; }
@@ -588,19 +589,20 @@ function orderCard(o) {
   if (o.status === "in_progress") {
     return `<div class="kcard kprog">${repo}<div class="ktitle">${escape(o.title)}</div><div class="kact"><span class="spin"></span>${escape(o.lastActivity || "working…")}</div><div class="kbranch">${escape(o.branch || "")}</div></div>`;
   }
-  return `<div class="kcard kdone">${del}${repo}<div class="ktitle">${escape(o.title)}</div><div class="ksum">${escape((o.summary || "").slice(0, 240))}</div><div class="kbranch">↳ ${escape(o.branch || "")}</div><button class="kbtn kghost" data-diff="${escape(o.id)}">view diff</button></div>`;
+  return `<div class="kcard kdone">${repo}<div class="ktitle">${escape(o.title)}</div><div class="ksum">${escape((o.summary || "").slice(0, 240))}</div><div class="kbranch">↳ ${escape(o.branch || "")}</div><div class="krow"><button class="kbtn kghost" data-diff="${escape(o.id)}">view diff</button><button class="kbtn kghost" data-archive="${escape(o.id)}" title="Archive (keep, hide)">⤓ Archive</button></div></div>`;
 }
 const EMPTY = { proposed: "No proposals yet — ask Jarvis to queue work.", in_progress: "Idle.", done: "Nothing shipped yet." };
 let colSig = {};
 function wireCol(scope) {
   scope.querySelectorAll("[data-dispatch]").forEach((b) => (b.onclick = () => { ws.send(JSON.stringify({ type: "dispatch", id: b.dataset.dispatch })); b.textContent = "dispatching…"; b.disabled = true; }));
-  scope.querySelectorAll("[data-del]").forEach((b) => (b.onclick = (e) => {
+  const pull = (b, type) => { const id = b.dataset.del || b.dataset.archive; b.onclick = (e) => {
     e.stopPropagation();
-    const id = b.dataset.del;
-    allOrders = allOrders.filter((o) => o.id !== id);   // optimistic
+    allOrders = allOrders.filter((o) => o.id !== id); // optimistic
     b.closest(".kcard")?.remove();
-    if (wsReady) ws.send(JSON.stringify({ type: "delete-order", id }));
-  }));
+    if (wsReady) ws.send(JSON.stringify({ type, id }));
+  }; };
+  scope.querySelectorAll("[data-del]").forEach((b) => pull(b, "delete-order"));   // proposals: hard delete
+  scope.querySelectorAll("[data-archive]").forEach((b) => pull(b, "archive-order")); // done: archive (kept on disk)
   scope.querySelectorAll("[data-diff]").forEach((b) => (b.onclick = async () => {
     const card = b.parentElement, open = card.querySelector(".kpatch");
     if (open) { open.remove(); b.textContent = "view diff"; return; }

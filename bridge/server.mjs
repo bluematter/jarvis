@@ -198,6 +198,7 @@ const listOrders = () => {
   try {
     return readdirSync(ORDERS_DIR).filter((f) => f.endsWith(".json"))
       .map((f) => readJSON(join(ORDERS_DIR, f), null)).filter(Boolean)
+      .filter((o) => o.status !== "archived") // archived done-orders are kept on disk but hidden from the board
       .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
   } catch { return []; }
 };
@@ -413,7 +414,8 @@ wss.on("connection", (ws) => {
     if (msg.type === "search" && msg.text?.trim()) return runSearch(msg.text);
     if (msg.type === "brief") return runBrief();
     if (msg.type === "dispatch" && msg.id) { dispatchOrder(msg.id); return; } // fire-and-forget; HUD polls /orders
-    if (msg.type === "delete-order" && msg.id) { const o = readOrder(msg.id); if (o && o.status !== "in_progress") { try { unlinkSync(orderPath(msg.id)); console.log(`[order] deleted ${msg.id}`); } catch {} } return; }
+    if (msg.type === "delete-order" && msg.id) { const o = readOrder(msg.id); if (o && (o.status === "proposed" || o.status === "failed")) { try { unlinkSync(orderPath(msg.id)); console.log(`[order] deleted ${msg.id}`); } catch {} } return; } // only proposals are deletable
+    if (msg.type === "archive-order" && msg.id) { const o = readOrder(msg.id); if (o && o.status === "done") { o.status = "archived"; writeOrder(o); console.log(`[order] archived ${msg.id}`); } return; } // done -> kept but hidden
   });
 
   // read-only history search over claude-mem (separate from the conversation; no TTS, no writes)
