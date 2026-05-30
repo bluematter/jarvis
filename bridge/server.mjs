@@ -6,7 +6,7 @@
 import { createServer } from "node:http";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { readFileSync, existsSync, readdirSync, appendFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, appendFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join, extname } from "node:path";
 import { WebSocketServer } from "ws";
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -413,6 +413,7 @@ wss.on("connection", (ws) => {
     if (msg.type === "search" && msg.text?.trim()) return runSearch(msg.text);
     if (msg.type === "brief") return runBrief();
     if (msg.type === "dispatch" && msg.id) { dispatchOrder(msg.id); return; } // fire-and-forget; HUD polls /orders
+    if (msg.type === "delete-order" && msg.id) { const o = readOrder(msg.id); if (o && o.status !== "in_progress") { try { unlinkSync(orderPath(msg.id)); console.log(`[order] deleted ${msg.id}`); } catch {} } return; }
   });
 
   // read-only history search over claude-mem (separate from the conversation; no TTS, no writes)

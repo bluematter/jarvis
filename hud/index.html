@@ -165,7 +165,10 @@
   .kbody { flex: 1; overflow-y: auto; padding: 0 14px 16px; display: flex; flex-direction: column; gap: 10px; }
   .kbody::-webkit-scrollbar { width: 0; }
   .kempty { color: #2f5263; font-size: .76rem; padding: 8px 2px; font-style: italic; }
-  .kcard { background: rgba(8,18,28,.8); border: 1px solid rgba(56,225,255,.12); border-radius: 9px; padding: 12px 13px; animation: pop .25s ease; }
+  .kcard { position: relative; background: rgba(8,18,28,.8); border: 1px solid rgba(56,225,255,.12); border-radius: 9px; padding: 12px 13px; animation: pop .25s ease; }
+  .kcard .kx { position: absolute; top: 6px; right: 7px; width: 20px; height: 20px; line-height: 18px; text-align: center; border-radius: 5px; border: 0; background: transparent; color: #4a6675; font-size: 1.05rem; cursor: pointer; opacity: 0; transition: .15s; }
+  .kcard:hover .kx { opacity: 1; }
+  .kcard .kx:hover { background: rgba(255,90,90,.18); color: #ff7a7a; }
   .kcard .krepo { font-family: var(--mono); font-size: .6rem; letter-spacing: .08em; text-transform: uppercase; color: var(--c); background: rgba(56,225,255,.08); padding: 2px 7px; border-radius: 5px; }
   .kcard .ktitle { font-size: .9rem; color: #e8f8ff; font-weight: 500; margin: 8px 0 6px; line-height: 1.3; }
   .kcard .kbrief { font-size: .76rem; color: #6f95a8; line-height: 1.45; max-height: 4.4em; overflow: hidden; }
@@ -578,18 +581,26 @@ const repoLabel = (r) => REPO_LABEL[r] || r;
 const kempty = (t) => `<div class="kempty">${escape(t)}</div>`;
 function orderCard(o) {
   const repo = `<span class="krepo">${escape(repoLabel(o.repo))}</span>`;
+  const del = `<button class="kx" data-del="${escape(o.id)}" title="Delete">×</button>`; // delete affordance on non-running cards
   if (o.status === "proposed" || o.status === "failed") {
-    return `<div class="kcard ${o.status === "failed" ? "kfail" : ""}">${repo}<div class="ktitle">${escape(o.title)}</div><div class="kbrief">${escape((o.brief || "").slice(0, 200))}</div>${o.status === "failed" ? `<div class="kerr">${escape(o.summary || "failed")}</div>` : ""}<button class="kbtn" data-dispatch="${escape(o.id)}">▶ ${o.status === "failed" ? "Retry" : "Dispatch"}</button></div>`;
+    return `<div class="kcard ${o.status === "failed" ? "kfail" : ""}">${del}${repo}<div class="ktitle">${escape(o.title)}</div><div class="kbrief">${escape((o.brief || "").slice(0, 200))}</div>${o.status === "failed" ? `<div class="kerr">${escape(o.summary || "failed")}</div>` : ""}<button class="kbtn" data-dispatch="${escape(o.id)}">▶ ${o.status === "failed" ? "Retry" : "Dispatch"}</button></div>`;
   }
   if (o.status === "in_progress") {
     return `<div class="kcard kprog">${repo}<div class="ktitle">${escape(o.title)}</div><div class="kact"><span class="spin"></span>${escape(o.lastActivity || "working…")}</div><div class="kbranch">${escape(o.branch || "")}</div></div>`;
   }
-  return `<div class="kcard kdone">${repo}<div class="ktitle">${escape(o.title)}</div><div class="ksum">${escape((o.summary || "").slice(0, 240))}</div><div class="kbranch">↳ ${escape(o.branch || "")}</div><button class="kbtn kghost" data-diff="${escape(o.id)}">view diff</button></div>`;
+  return `<div class="kcard kdone">${del}${repo}<div class="ktitle">${escape(o.title)}</div><div class="ksum">${escape((o.summary || "").slice(0, 240))}</div><div class="kbranch">↳ ${escape(o.branch || "")}</div><button class="kbtn kghost" data-diff="${escape(o.id)}">view diff</button></div>`;
 }
 const EMPTY = { proposed: "No proposals yet — ask Jarvis to queue work.", in_progress: "Idle.", done: "Nothing shipped yet." };
 let colSig = {};
 function wireCol(scope) {
   scope.querySelectorAll("[data-dispatch]").forEach((b) => (b.onclick = () => { ws.send(JSON.stringify({ type: "dispatch", id: b.dataset.dispatch })); b.textContent = "dispatching…"; b.disabled = true; }));
+  scope.querySelectorAll("[data-del]").forEach((b) => (b.onclick = (e) => {
+    e.stopPropagation();
+    const id = b.dataset.del;
+    allOrders = allOrders.filter((o) => o.id !== id);   // optimistic
+    b.closest(".kcard")?.remove();
+    if (wsReady) ws.send(JSON.stringify({ type: "delete-order", id }));
+  }));
   scope.querySelectorAll("[data-diff]").forEach((b) => (b.onclick = async () => {
     const card = b.parentElement, open = card.querySelector(".kpatch");
     if (open) { open.remove(); b.textContent = "view diff"; return; }
