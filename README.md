@@ -1,5 +1,7 @@
 # JARVIS
 
+> Your AI chief of staff, always on, always brief.
+
 An Iron Man–style HUD that talks to your **local Claude Code** and is aware of your **entire fleet of projects** — not one repo in isolation. Put it on a TV, clap to wake it, talk to it.
 
 ```
