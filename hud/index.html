@@ -368,9 +368,10 @@ async function initAudio() {
     proc.onaudioprocess = (e) => {
       const ch = e.inputBuffer.getChannelData(0);
       if (capturing) capBuf.push(new Float32Array(ch));
-      // continuous stream → the bridge does wake detection + Silero VAD + semantic endpointing.
-      // Suppressed only during push-to-talk (which captures locally and sends one tagged utterance).
-      if (WAKE_MODE && wsReady && !pttActive) streamWake(new Float32Array(ch));
+      // stream → the bridge does wake detection + Silero VAD + semantic endpointing. Suppressed during
+      // push-to-talk, and while Jarvis is thinking/speaking — otherwise his own voice leaking into the
+      // mic can false-fire the wake word and barge in on (cut off) his own answer.
+      if (WAKE_MODE && wsReady && !pttActive && mode !== "speaking" && mode !== "thinking") streamWake(new Float32Array(ch));
     };
     src.connect(proc);
     const mute = actx.createGain(); mute.gain.value = 0; proc.connect(mute); mute.connect(actx.destination);
