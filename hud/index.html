@@ -73,8 +73,8 @@
     background: rgba(56,225,255,.05); background-image: repeating-linear-gradient(90deg, transparent 0 11px, rgba(56,225,255,.09) 11px 12px); }
   .card .gfill { height: 100%; border-radius: 3px; position: relative; transition: width .9s cubic-bezier(.2,.8,.2,1);
     background: linear-gradient(90deg, #2aa7ff, #7fefff); box-shadow: 0 0 10px rgba(56,225,255,.55), inset 0 0 6px rgba(255,255,255,.25); }
-  .card .gfill::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%);
-    background: linear-gradient(90deg, transparent, rgba(255,255,255,.5), transparent); animation: gscan 2.8s ease-in-out infinite; }
+  .card .gtrack::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); pointer-events: none; z-index: 2;
+    background: linear-gradient(90deg, transparent, rgba(150,235,255,.42), transparent); animation: gscan 2.8s ease-in-out infinite; }
   .card .gfill.gdone { background: linear-gradient(90deg, #4dffb0, #b6ffe6); box-shadow: 0 0 12px rgba(120,255,200,.6); }
   .card .gmeta { display: flex; justify-content: space-between; margin-top: 5px; font-family: var(--mono); font-size: .58rem; letter-spacing: .04em; color: #6fa8c0; }
   .card .gmeta i { color: #4a6675; font-style: normal; }
