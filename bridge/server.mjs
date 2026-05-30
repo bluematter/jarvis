@@ -256,10 +256,10 @@ function sparkToOrder(id, repo) { // promote a spark into a proposed work-order 
 const ROUTINES_FILE = join(STATE, "routines.json");
 const readRoutines = () => readJSON(ROUTINES_FILE, []) || [];
 const writeRoutines = (l) => { try { writeFileSync(ROUTINES_FILE, JSON.stringify(l, null, 2)); } catch {} };
-function addRoutine(text, project = "", cadence = "daily") {
+function addRoutine(text, project = "", cadence = "daily", cmd = "") {
   text = String(text || "").trim(); if (!text) return null;
   const l = readRoutines();
-  const r = { id: "rt-" + Math.random().toString(36).slice(2, 9), text, project: project || "", cadence: cadence || "daily", lastDone: "", streak: 0, created: new Date().toISOString() };
+  const r = { id: "rt-" + Math.random().toString(36).slice(2, 9), text, project: project || "", cadence: cadence || "daily", cmd: (cmd || "").trim(), lastDone: "", streak: 0, created: new Date().toISOString() };
   l.push(r); writeRoutines(l); return r;
 }
 const updateRoutine = (id, patch) => { const l = readRoutines(); const r = l.find((x) => x.id === id); if (r) { Object.assign(r, patch); writeRoutines(l); } };
@@ -278,10 +278,25 @@ function markRoutineDone(id, done) {
   writeRoutines(l);
 }
 const routinesWithDue = () => readRoutines().map((r) => ({ ...r, due: routineDue(r) }));
-function routineToOrder(id) {
+// Routines don't produce code — they RUN an automation (a Playwright script, a cron-y task, etc).
+// runRoutine spawns the routine's `cmd` in its project dir and marks it done for the day on exit 0.
+function runRoutine(id) {
   const r = readRoutines().find((x) => x.id === id); if (!r) return;
-  writeOrder({ id: "routine-" + Date.now().toString(36), repo: r.project || "", title: r.text.slice(0, 80), brief: r.text, status: "proposed", createdAt: new Date().toISOString(), fromRoutine: id });
-  broadcast({ type: "toast", title: "Routine → ticket", body: r.text.slice(0, 80) });
+  if (!r.cmd) { broadcast({ type: "toast", title: "No command set", body: r.text.slice(0, 70) + " — add a run command to automate it" }); return; }
+  const cwd = r.project ? join(ROOT, "..", r.project) : join(ROOT, "..");
+  updateRoutine(id, { running: true });
+  broadcast({ type: "toast", title: "🔁 Running…", body: r.text.slice(0, 70) });
+  let out = ""; let p;
+  const fail = (m) => { updateRoutine(id, { running: false }); broadcast({ type: "toast", title: "✕ " + r.text.slice(0, 40), body: String(m).slice(0, 130) }); };
+  try { p = spawn(r.cmd, { shell: true, cwd }); } catch (e) { return fail(e?.message || e); }
+  p.stdout?.on("data", (d) => { out = (out + d).slice(-4000); });
+  p.stderr?.on("data", (d) => { out = (out + d).slice(-4000); });
+  p.on("error", (e) => fail(e?.message || e));
+  p.on("exit", (code) => {
+    updateRoutine(id, { running: false });
+    if (code === 0) { markRoutineDone(id, true); broadcast({ type: "toast", title: "✓ " + r.text.slice(0, 50), body: "ran successfully" }); }
+    else fail("exit " + code + ((out.trim().split("\n").pop() || "") && " · " + out.trim().split("\n").pop()));
+  });
 }
 
 function dispatchPrompt(order, branch) {
@@ -627,11 +642,12 @@ wss.on("connection", (ws) => {
     if (msg.type === "spark-set" && msg.id) { updateSpark(msg.id, msg.patch || {}); return; }
     if (msg.type === "spark-del" && msg.id) { delSpark(msg.id); return; }
     if (msg.type === "spark-ticket" && msg.id) { sparkToOrder(msg.id, msg.repo); return; }
-    if (msg.type === "routine-add" && msg.text) { addRoutine(msg.text, msg.project, msg.cadence); return; }
+    if (msg.type === "routine-add" && msg.text) { addRoutine(msg.text, msg.project, msg.cadence, msg.cmd); return; }
     if (msg.type === "routine-done" && msg.id) { markRoutineDone(msg.id, msg.done !== false); return; }
     if (msg.type === "routine-set" && msg.id) { updateRoutine(msg.id, msg.patch || {}); return; }
     if (msg.type === "routine-del" && msg.id) { delRoutine(msg.id); return; }
-    if (msg.type === "routine-ticket" && msg.id) { routineToOrder(msg.id); return; }
+    if (msg.type === "routine-run" && msg.id) { runRoutine(msg.id); return; }
+    if (msg.type === "routine-setcmd" && msg.id) { updateRoutine(msg.id, { cmd: String(msg.cmd || "").trim() }); return; }
     if (msg.type === "dispatch" && msg.id) { dispatchOrder(msg.id); return; } // fire-and-forget; HUD polls /orders
     if (msg.type === "go-live" && msg.id) { liveDispatch(msg.id); return; }    // escape hatch: interactive Terminal + Zed
     if (msg.type === "finish-live" && msg.id) { finishLive(msg.id); return; }  // close the live session -> PR

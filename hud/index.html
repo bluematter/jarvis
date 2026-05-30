@@ -204,9 +204,16 @@
   .sbtn.sx:hover { background: rgba(255,90,90,.2); border-color: #ff7a7a; color: #ff7a7a; }
   /* Routines panel */
   .chip.brief.rtdue { border-color: #ffb454; color: #ffb454; }
-  .rtadd { display: flex; gap: 8px; margin: 16px 22px 6px; }
+  .rtadd { display: flex; flex-direction: column; gap: 8px; margin: 16px 22px 6px; }
+  .rtrow1 { display: flex; gap: 8px; }
   .rtadd .search { flex: 1; margin: 0; width: auto; }
+  .rtcmdin { font-family: var(--mono); font-size: .72rem; }
   .rtsel { background: rgba(8,18,28,.8); border: 1px solid rgba(56,225,255,.2); color: #cfeefb; border-radius: 8px; padding: 0 10px; font-family: var(--font); font-size: .8rem; cursor: pointer; }
+  .rtrun { color: #7dffc8; border-color: rgba(120,255,200,.35); display: inline-flex; align-items: center; gap: 6px; }
+  .rtrun:hover { background: rgba(120,255,200,.16); border-color: #7dffc8; }
+  .rtrun.on { color: #7dffc8; opacity: .8; cursor: default; }
+  .rtcmd { font-family: var(--mono); font-size: .58rem; color: #5d8294; background: rgba(56,225,255,.05); padding: 2px 7px; border-radius: 5px; cursor: pointer; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rtcmd:hover { color: #7dffc8; }
   .rthead { font-family: var(--mono); font-size: .62rem; letter-spacing: .1em; text-transform: uppercase; color: #4a6675; margin: 14px 0 2px; }
   .rt { display: flex; align-items: flex-start; gap: 12px; background: rgba(8,18,28,.7); border: 1px solid rgba(56,225,255,.1); border-radius: 9px; padding: 12px 14px; }
   .rt.due { border-left: 3px solid #ffb454; }
@@ -321,9 +328,12 @@
   <div class="board-card spark-card">
     <div class="board-h"><span>🔁 Routines <em>— recurring tasks, reminded daily</em></span><a id="routinesClose" title="Close (Esc)">✕</a></div>
     <div class="rtadd">
-      <input id="rtInput" class="search" placeholder="Add a recurring task…  ↵" autocomplete="off" />
-      <select id="rtCad" class="rtsel"><option value="daily">Daily</option><option value="weekdays">Weekdays</option><option value="weekly">Weekly</option></select>
-      <select id="rtProj" class="rtsel"><option value="">No project</option><option value="eatiq">BasedHealth</option><option value="wireflow">Wireflow</option><option value="gluely-app">Gluely</option><option value="rizz">Rizzly</option><option value="basedlabs-hub">BasedLabs</option></select>
+      <div class="rtrow1">
+        <input id="rtInput" class="search" placeholder="Add a recurring task…  ↵" autocomplete="off" />
+        <select id="rtCad" class="rtsel"><option value="daily">Daily</option><option value="weekdays">Weekdays</option><option value="weekly">Weekly</option></select>
+        <select id="rtProj" class="rtsel"><option value="">No project</option><option value="eatiq">BasedHealth</option><option value="wireflow">Wireflow</option><option value="gluely-app">Gluely</option><option value="rizz">Rizzly</option><option value="basedlabs-hub">BasedLabs</option></select>
+      </div>
+      <input id="rtCmd" class="search rtcmdin" placeholder="▶ run command (optional) — e.g. node automations/tiktok-outreach.mjs · leave blank for a manual reminder" autocomplete="off" />
     </div>
     <div class="sparklist" id="rtlist"></div>
   </div>
@@ -695,11 +705,16 @@ const routines = $("routines"), routinesBtn = $("routinesBtn"), rtInput = $("rtI
 let rtPoll = null, allRoutines = [], lastRtSig = "";
 function routineCard(r) {
   const done = r.lastDone === todayDate();
+  const runBtn = r.running
+    ? `<span class="sbtn rtrun on"><span class="spin"></span> running</span>`
+    : r.cmd
+      ? `<button class="sbtn rtrun" data-rtrun="${escape(r.id)}" title="Run: ${escape(r.cmd)}">▶ Run</button>`
+      : `<button class="sbtn" data-rtcmd="${escape(r.id)}" title="Attach a command so Jarvis can run this for you">⚙ Automate</button>`;
   return `<div class="rt ${r.due ? "due" : ""} ${done ? "rtdone" : ""}">
     <button class="rtcheck ${done ? "on" : ""}" data-rtdone="${escape(r.id)}" title="${done ? "Undo" : "Mark done today"}">${done ? "✓" : ""}</button>
     <div class="rtbody"><div class="rttext">${escape(r.text)}</div>
-      <div class="rtmeta">${r.project ? `<span class="rtproj">${escape(repoLabel(r.project))}</span>` : ""}<span class="rtcad">${escape(r.cadence)}</span>${r.streak ? `<span class="rtstreak">🔥 ${r.streak}</span>` : ""}</div></div>
-    <div class="rtacts"><button class="sbtn" data-rtticket="${escape(r.id)}" title="Dispatch as a work-order">→ Ticket</button><button class="sbtn sx" data-rtdel="${escape(r.id)}" title="Delete">×</button></div></div>`;
+      <div class="rtmeta">${r.project ? `<span class="rtproj">${escape(repoLabel(r.project))}</span>` : ""}<span class="rtcad">${escape(r.cadence)}</span>${r.streak ? `<span class="rtstreak">🔥 ${r.streak}</span>` : ""}${r.cmd ? `<span class="rtcmd" data-rtcmd="${escape(r.id)}" title="Edit command">▶ ${escape(r.cmd)}</span>` : ""}</div></div>
+    <div class="rtacts">${runBtn}<button class="sbtn sx" data-rtdel="${escape(r.id)}" title="Delete">×</button></div></div>`;
 }
 function renderRoutines() {
   const today = todayDate();
@@ -712,7 +727,12 @@ function renderRoutines() {
 function wireRoutines() {
   rtlist.querySelectorAll("[data-rtdone]").forEach((b) => (b.onclick = () => { const r = allRoutines.find((x) => x.id === b.dataset.rtdone); const done = r && r.lastDone === todayDate(); routineSet(b.dataset.rtdone, done ? { type: "routine-done", done: false } : { type: "routine-done", done: true }); }));
   rtlist.querySelectorAll("[data-rtdel]").forEach((b) => (b.onclick = () => { allRoutines = allRoutines.filter((r) => r.id !== b.dataset.rtdel); if (wsReady) ws.send(JSON.stringify({ type: "routine-del", id: b.dataset.rtdel })); renderRoutines(); }));
-  rtlist.querySelectorAll("[data-rtticket]").forEach((b) => (b.onclick = () => { if (wsReady) ws.send(JSON.stringify({ type: "routine-ticket", id: b.dataset.rtticket })); setTimeout(refreshRoutines, 200); }));
+  rtlist.querySelectorAll("[data-rtrun]").forEach((b) => (b.onclick = () => { if (wsReady) ws.send(JSON.stringify({ type: "routine-run", id: b.dataset.rtrun })); setTimeout(refreshRoutines, 200); }));
+  rtlist.querySelectorAll("[data-rtcmd]").forEach((b) => (b.onclick = () => {
+    const r = allRoutines.find((x) => x.id === b.dataset.rtcmd);
+    const v = prompt("Command to run for this routine (runs in " + (r?.project ? r.project : "~/Documents/projects") + "):\ne.g.  node automations/tiktok-outreach.mjs", r?.cmd || "");
+    if (v !== null && wsReady) { ws.send(JSON.stringify({ type: "routine-setcmd", id: b.dataset.rtcmd, cmd: v.trim() })); setTimeout(refreshRoutines, 180); }
+  }));
 }
 function routineSet(id, msg) { if (wsReady) ws.send(JSON.stringify({ ...msg, id })); setTimeout(refreshRoutines, 150); }
 async function refreshRoutines() {
@@ -726,10 +746,15 @@ function openRoutines() { routines.hidden = false; lastRtSig = ""; refreshRoutin
 function closeRoutines() { routines.hidden = true; if (rtPoll) { clearInterval(rtPoll); rtPoll = null; } }
 routinesBtn.onclick = () => (routines.hidden ? openRoutines() : closeRoutines());
 $("routinesClose").onclick = closeRoutines;
-rtInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && rtInput.value.trim()) { if (wsReady) ws.send(JSON.stringify({ type: "routine-add", text: rtInput.value.trim(), cadence: $("rtCad").value, project: $("rtProj").value })); rtInput.value = ""; setTimeout(refreshRoutines, 180); }
+function submitRoutine() {
+  if (!rtInput.value.trim() || !wsReady) return;
+  ws.send(JSON.stringify({ type: "routine-add", text: rtInput.value.trim(), cadence: $("rtCad").value, project: $("rtProj").value, cmd: $("rtCmd").value.trim() }));
+  rtInput.value = ""; $("rtCmd").value = ""; setTimeout(refreshRoutines, 180);
+}
+[rtInput, $("rtCmd")].forEach((el) => el.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") submitRoutine();
   else if (e.key === "Escape") { e.preventDefault(); closeRoutines(); }
-});
+}));
 addEventListener("keydown", (e) => {
   if ((e.key === "r" || e.key === "R") && !typing(e)) { e.preventDefault(); routines.hidden ? openRoutines() : closeRoutines(); }
   else if (e.key === "Escape" && !routines.hidden) closeRoutines();
