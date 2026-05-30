@@ -134,6 +134,10 @@
   .btn svg { width: 30px; height: 30px; }
 
   .hint { position: absolute; bottom: 36px; font-size: .78rem; color: #4a6675; }
+  .waketoggle { display: inline-flex; align-items: center; gap: 4px; background: rgba(56,225,255,.07); border: 1px solid rgba(56,225,255,.22);
+    color: #6fb8d4; border-radius: 999px; padding: 2px 12px; font-family: var(--font); font-size: .76rem; cursor: pointer; transition: .14s; vertical-align: middle; }
+  .waketoggle:hover { background: rgba(56,225,255,.15); }
+  .waketoggle.on { background: rgba(56,225,255,.18); border-color: var(--c); color: var(--c); box-shadow: 0 0 12px rgba(56,225,255,.25); }
   kbd { background: #11202c; border: 1px solid #1d3340; border-radius: 5px; padding: 1px 7px; color: var(--c); font-family: var(--mono); font-size: .72rem; }
   .meter { position: absolute; bottom: 22px; width: 180px; height: 3px; background: var(--dim); border-radius: 2px; overflow: hidden; opacity: 0; transition: opacity .3s; }
   .meter.on { opacity: 1; }
@@ -276,8 +280,6 @@
         <span class="chip" id="tbFleet"></span>
         <span class="chip brief" id="brief" title="Morning briefing (press B)">◐ Brief</span>
         <span class="chip brief" id="boardBtn" title="Work orders (press O)">⊞ Work</span>
-        <span class="chip brief" id="wakeBtn" title="Hands-free &quot;Hey Jarvis&quot; (press J)">🎙 Hey-Jarvis</span>
-        <span class="chip brief" id="voiceBtn" title="Toggle voice — Daniel ↔ George (press V)">🔊 Daniel</span>
         <span class="chip brief" id="sparksBtn" title="Idea dumps — triage daily (press I)">💡 Sparks</span>
         <span class="chip brief" id="routinesBtn" title="Recurring daily tasks (press R)">🔁 Routines</span>
       </div>
@@ -351,7 +353,7 @@ function connect() {
   try {
     ws = new WebSocket(`ws://${location.host}`);
     ws.binaryType = "arraybuffer";
-    ws.onopen = () => { wsReady = true; conn.classList.add("on"); tbBridge.classList.add("on"); setState("idle", "Online. Warming voice…"); const vv = localStorage.getItem("jarvisVoice"); if (vv) ws.send(JSON.stringify({ type: "voice", name: vv })); };
+    ws.onopen = () => { wsReady = true; conn.classList.add("on"); tbBridge.classList.add("on"); setState("idle", "Online. Warming voice…"); }; // voice is set via JARVIS_VOICE in .env
     ws.onclose = () => { wsReady = false; conn.classList.remove("on"); tbBridge.classList.remove("on"); tbVoice.classList.remove("on"); setState("offline", "Bridge lost. Reconnecting…"); setTimeout(connect, 1500); };
     ws.onmessage = (e) => { if (typeof e.data === "string") handle(JSON.parse(e.data)); else enqueueAudio(e.data); };
   } catch (err) { setState("offline", "Bridge lost. Reconnecting…"); setTimeout(connect, 1500); }
@@ -569,9 +571,9 @@ function clapLoop() {
   }, 40);
 }
 function armedHint() {
-  hint.innerHTML = WAKE_MODE
-    ? 'mic armed · say <b>“Hey&nbsp;Jarvis…”</b> &nbsp;·&nbsp; or hold <kbd>Space</kbd> to talk'
-    : 'mic armed · hold <kbd>Space</kbd> or the mic button to talk';
+  const on = WAKE_MODE;
+  hint.innerHTML = `mic armed · <button class="waketoggle${on ? " on" : ""}" id="wakeToggle" title="Hands-free (J)">🎙 Hey&nbsp;Jarvis ${on ? "●" : "○"}</button> &nbsp;·&nbsp; or hold <kbd>Space</kbd> to talk`;
+  $("wakeToggle").onclick = () => setWake(!WAKE_MODE);
 }
 // A soft rising "power-up" shimmer — what JARVIS would do, not a notification ding. Synthesized live:
 // two detuned partials sweeping up an octave through an opening low-pass + a faint top sparkle.
@@ -616,31 +618,13 @@ function sendBrief() { if (!wsReady || mode === "thinking") return; ws.send(JSON
 briefBtn.onclick = sendBrief;
 addEventListener("keydown", (e) => { if ((e.key === "b" || e.key === "B") && !typing(e)) { e.preventDefault(); sendBrief(); } });
 
-// ---------- hands-free "Hey Jarvis" toggle ----------
-const wakeBtn = $("wakeBtn");
+// ---------- hands-free "Hey Jarvis" toggle (lives inline in the mic-armed hint now) ----------
 function setWake(on) {
   WAKE_MODE = on; try { localStorage.setItem("jarvisWake", on ? "1" : "0"); } catch {}
-  wakeBtn.classList.toggle("on", on);
-  wakeBtn.textContent = on ? "🎙 Hey-Jarvis ●" : "🎙 Hey-Jarvis";
-  if (actx) armedHint(); // reflect the new input options in the hint (once the mic is armed)
+  if (actx) armedHint(); // re-render the inline toggle (once the mic is armed)
 }
-wakeBtn.onclick = () => setWake(!WAKE_MODE);
 addEventListener("keydown", (e) => { if ((e.key === "j" || e.key === "J") && !typing(e)) { e.preventDefault(); setWake(!WAKE_MODE); } });
-setWake(WAKE_MODE); // reflect the persisted setting in the chip
-
-// ---------- voice toggle (Daniel ↔ George) ----------
-const VLABEL = { bm_daniel: "Daniel", bm_george: "George" };
-let curVoice = localStorage.getItem("jarvisVoice") || "bm_daniel";
-const voiceBtn = $("voiceBtn");
-function applyVoice(v, push) {
-  if (!VLABEL[v]) v = "bm_daniel";
-  curVoice = v; try { localStorage.setItem("jarvisVoice", v); } catch {}
-  voiceBtn.textContent = "🔊 " + VLABEL[v];
-  if (push && wsReady) ws.send(JSON.stringify({ type: "voice", name: v }));
-}
-voiceBtn.onclick = () => applyVoice(curVoice === "bm_daniel" ? "bm_george" : "bm_daniel", true);
-addEventListener("keydown", (e) => { if ((e.key === "v" || e.key === "V") && !typing(e)) { e.preventDefault(); voiceBtn.onclick(); } });
-applyVoice(curVoice, false); // set the chip label from the saved choice
+// voice is config-driven now: set JARVIS_VOICE in .env (default bm_daniel)
 
 // ---------- work-order board (propose → approve → dispatch) ----------
 const board = $("board"), boardBtn = $("boardBtn");
