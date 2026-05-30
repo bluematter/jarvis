@@ -364,7 +364,7 @@ async function initAudio() {
     src.connect(proc);
     const mute = actx.createGain(); mute.gain.value = 0; proc.connect(mute); mute.connect(actx.destination);
     clapLoop();
-    hint.innerHTML = 'mic armed · hold <kbd>Space</kbd> or the mic button to talk';
+    armedHint();
     meter.classList.add("on");
     if (briefDue) { briefDue = false; setTimeout(sendBrief, 700); } // first interaction of the day → auto-briefing
   } catch { hint.textContent = "Mic blocked — allow microphone access in the browser, then reload."; }
@@ -451,6 +451,11 @@ function clapLoop() {
     } else vad = false;
   }, 40);
 }
+function armedHint() {
+  hint.innerHTML = WAKE_MODE
+    ? 'mic armed · say <b>“Hey&nbsp;Jarvis…”</b> &nbsp;·&nbsp; or hold <kbd>Space</kbd> to talk'
+    : 'mic armed · hold <kbd>Space</kbd> or the mic button to talk';
+}
 function readPeak(an) {
   an.getByteTimeDomainData(tmp);
   let p = 0; for (const v of tmp) p = Math.max(p, Math.abs(v - 128));
@@ -476,6 +481,7 @@ function setWake(on) {
   WAKE_MODE = on; try { localStorage.setItem("jarvisWake", on ? "1" : "0"); } catch {}
   wakeBtn.classList.toggle("on", on);
   wakeBtn.textContent = on ? "🎙 Hey-Jarvis ●" : "🎙 Hey-Jarvis";
+  if (actx) armedHint(); // reflect the new input options in the hint (once the mic is armed)
 }
 wakeBtn.onclick = () => setWake(!WAKE_MODE);
 addEventListener("keydown", (e) => { if ((e.key === "j" || e.key === "J") && !typing(e)) { e.preventDefault(); setWake(!WAKE_MODE); } });

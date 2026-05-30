@@ -4,6 +4,10 @@ node_modules/
 *.log
 .DS_Store
 
+# Claude Code local runtime state (machine-local, never committed)
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+
 # Generated brain state (machine-local, can be huge / contains business data)
 hub/fleet.md
 hub/fleet.json
