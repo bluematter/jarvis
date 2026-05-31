@@ -34,6 +34,7 @@ const PORT = Number(env.PORT || 4317);
 const HUB = join(ROOT, env.JARVIS_HUB?.replace(/^\.\//, "") || "hub");
 const MODEL = env.JARVIS_MODEL || undefined;
 const DISPATCH_MODEL = env.JARVIS_DISPATCH_MODEL || "claude-opus-4-8"; // Opus for the actual code work (voice stays on MODEL)
+const DISPATCH_MAX_TURNS = Number(env.JARVIS_DISPATCH_MAX_TURNS || 80); // runaway guard: cap an autonomous dispatch's tool-turns
 const ZED = env.JARVIS_ZED || "/Applications/Zed.app/Contents/MacOS/cli"; // for the live escape hatch
 const PERMISSION_MODE = env.JARVIS_PERMISSION_MODE || "bypassPermissions";
 // spoken ack when a turn reaches for tools, so a data-gathering turn isn't dead silence
@@ -399,7 +400,7 @@ async function dispatchOrder(id) {
     let out = "";
     const stream = query({
       prompt: dispatchPrompt(order, branch),
-      options: { cwd: wt, model: DISPATCH_MODEL, permissionMode: "default", canUseTool: dispatchPolicy(wt, repoPath), settingSources: ["user", "project"] },
+      options: { cwd: wt, model: DISPATCH_MODEL, permissionMode: "default", canUseTool: dispatchPolicy(wt, repoPath), settingSources: ["user", "project"], maxTurns: DISPATCH_MAX_TURNS },
     });
     for await (const ev of stream) {
       if (ev.type === "assistant") {
