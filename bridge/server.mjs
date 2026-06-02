@@ -287,7 +287,7 @@ const routinesWithDue = () => readRoutines().map((r) => ({ ...r, due: routineDue
 function runRoutine(id) {
   const r = readRoutines().find((x) => x.id === id); if (!r) return;
   if (!r.cmd) { // no script -> delegate to a Claude agent in the project (it reads the README, runs Playwright, etc.)
-    if (r.project) { const a = launchAgentSession({ project: r.project, task: r.text, label: `${r.project} · routine` }); broadcast(a.ok ? { type: "toast", title: "🤖 Running via agent", body: r.text.slice(0, 70) } : { type: "toast", title: "Couldn't run", body: a.error }); return; }
+    if (r.project) { const a = launchAgentSession({ project: r.project, task: r.prompt || r.text, label: `${r.project} · routine` }); broadcast(a.ok ? { type: "toast", title: "🤖 Running via agent", body: r.text.slice(0, 70) } : { type: "toast", title: "Couldn't run", body: a.error }); return; }
     broadcast({ type: "toast", title: "No command set", body: r.text.slice(0, 70) + " — add a project (to run via an agent) or a command" }); return;
   }
   const cwd = r.project ? join(ROOT, "..", r.project) : join(ROOT, "..");
@@ -605,6 +605,24 @@ function launchAgentSession({ project, task, label }) {
   broadcast({ type: "open-term", id: s.id });
   console.log(`[agent] launched in ${r.dir}: ${t.slice(0, 70)}`);
   return { ok: true, id: s.id, dir: r.dir };
+}
+// DETERMINISTIC voice trigger: "run/launch <name>" maps straight to a defined routine (its project +
+// fixed prompt) and fires launchAgentSession — no LLM in the path, so it does the SAME thing every time.
+const PROJECT_DISPLAY = { eatiq: "BasedHealth", wireflow: "Wireflow", "gluely-app": "Gluely", rizz: "Rizzly", "basedlabs-hub": "BasedLabs" };
+const projDisplay = (d) => PROJECT_DISPLAY[d] || d;
+const RUN_RE = /^\s*(?:hey,?\s*)?(?:can you |could you |would you |please )?(?:go (?:and )?)?(?:run|start|launch|kick ?off|fire(?: off| up)?|execute|trigger|begin)\b(?:\s+(?:the|my|our))?\s+(.+?)[.!?]*\s*$/i;
+const RUN_STOP = new Set("the a an my our your for to in on of and or with please go now today it that this me again real quick thing stuff one task".split(" "));
+function matchRoutineForRun(phrase) {
+  const sig = (s) => String(s).toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 2 && !RUN_STOP.has(w));
+  const want = sig(phrase); if (!want.length) return null;
+  let best = null, bestShared = 0;
+  for (const r of readRoutines()) {
+    if (!r.project) continue;
+    const have = new Set(sig(r.text + " " + (r.prompt || "")));
+    const shared = want.filter((w) => have.has(w)).length;
+    if (shared > bestShared) { bestShared = shared; best = r; }
+  }
+  return best && (bestShared >= 2 || bestShared === want.length) ? best : null; // confident match only; else fall through to the LLM
 }
 // the in-process tool the voice/conversation agent calls to actually DO something in a project
 const jarvisTools = createSdkMcpServer({
@@ -951,6 +969,16 @@ wss.on("connection", (ws) => {
   const ROUTINE_RE = /^\s*(?:daily task|routine|recurring task|remind me (?:daily|every ?day|each day)(?: to)?|every ?day)\b[:,\-\s]*(.+)/is;
   const capture = (text, prompt, line) => { send({ type: "transcript", text: prompt }); send({ type: "result", text: line }); return say(line.replace(/\.$/, ", sir.")); };
   const runTurn = (prompt) => {
+    const ru = RUN_RE.exec(prompt); // "run the tiktok outreach" -> fire the matching routine's exact task, deterministically
+    if (ru) {
+      const match = matchRoutineForRun(ru[1]);
+      if (match) {
+        const a = launchAgentSession({ project: match.project, task: match.prompt || match.text, label: `${match.project} · routine` });
+        const name = match.text.split(/\s*[—–-]\s*/)[0].trim();
+        if (a.ok) { broadcast({ type: "toast", title: "🤖 Agent launched", body: match.text.slice(0, 80) }); return capture(prompt, prompt, `Launching the ${name} in ${projDisplay(match.project)} now.`); }
+        return capture(prompt, prompt, `I couldn't launch that — ${a.error}.`);
+      }
+    }
     const rm = ROUTINE_RE.exec(prompt);
     if (rm && rm[1].trim().length > 2) { // recurring task
       addRoutine(rm[1].trim(), "", "daily");
