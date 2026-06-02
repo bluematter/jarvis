@@ -290,7 +290,7 @@ const routinesWithDue = () => readRoutines().map((r) => ({ ...r, due: routineDue
 function runRoutine(id) {
   const r = readRoutines().find((x) => x.id === id); if (!r) return;
   if (!r.cmd) { // no script -> delegate to a Claude agent in the project (it reads the README, runs Playwright, etc.)
-    if (r.project) { const a = launchAgentSession({ project: r.project, task: r.prompt || r.text, label: `${r.project} · routine` }); broadcast(a.ok ? { type: "toast", title: "🤖 Running via agent", body: r.text.slice(0, 70) } : { type: "toast", title: "Couldn't run", body: a.error }); return; }
+    if (r.project) { const a = launchAgentSession({ project: r.project, command: r.command, task: r.command ? "" : (r.prompt || r.text), label: `${r.project} · routine` }); broadcast(a.ok ? { type: "toast", title: "🤖 Running via agent", body: r.text.slice(0, 70) } : { type: "toast", title: "Couldn't run", body: a.error }); return; }
     broadcast({ type: "toast", title: "No command set", body: r.text.slice(0, 70) + " — add a project (to run via an agent) or a command" }); return;
   }
   const cwd = r.project ? join(ROOT, "..", r.project) : join(ROOT, "..");
@@ -597,17 +597,26 @@ function resolveProjectDir(name) {
   const path = join(ROOT, "..", dir);
   return existsSync(path) ? { dir, path } : null;
 }
-function launchAgentSession({ project, task, label }) {
+function launchAgentSession({ project, task, label, command }) {
   const r = resolveProjectDir(project);
   if (!r) return { ok: false, error: `unknown project "${project}" (try BasedHealth, Wireflow, Gluely, Rizzly, BasedLabs)` };
-  const t = String(task || "").trim();
-  if (t.length < 3) return { ok: false, error: "empty task" };
-  const dir = join(STATE, "agent", Date.now().toString(36)); mkdirSync(dir, { recursive: true });
-  const taskPath = join(dir, "task.txt"); writeFileSync(taskPath, t); // via $(cat) so the shell never re-parses the task
-  const s = termSpawn({ cwd: r.path, project: r.dir, label: label || `${r.dir} · agent`, cmd: `claude "$(cat '${taskPath}')"` });
+  let cmd, what;
+  if (command) { // fire a NATIVE slash command — a committed playbook in the project's .claude/commands/. Jarvis only passes the name.
+    const name = String(command).replace(/^\/+/, "").replace(/[^a-z0-9_-]/gi, "");
+    if (!name) return { ok: false, error: "bad command name" };
+    const args = String(task || "").replace(/["`$\\;|&<>(){}\n]/g, " ").replace(/\s+/g, " ").trim().slice(0, 200); // per-run extras -> $ARGUMENTS, shell-safe
+    cmd = `claude "/${name}${args ? " " + args : ""}"`; what = "/" + name + (args ? " " + args : "");
+  } else { // freeform / ad-hoc task — write to a file, read via $(cat) so the shell never re-parses it
+    const t = String(task || "").trim();
+    if (t.length < 3) return { ok: false, error: "empty task" };
+    const dir = join(STATE, "agent", Date.now().toString(36)); mkdirSync(dir, { recursive: true });
+    const taskPath = join(dir, "task.txt"); writeFileSync(taskPath, t);
+    cmd = `claude "$(cat '${taskPath}')"`; what = t.slice(0, 70);
+  }
+  const s = termSpawn({ cwd: r.path, project: r.dir, label: label || `${r.dir} · agent`, cmd });
   if (!s) return { ok: false, error: "couldn't open the terminal" };
   broadcast({ type: "open-term", id: s.id });
-  console.log(`[agent] launched in ${r.dir}: ${t.slice(0, 70)}`);
+  console.log(`[agent] launched in ${r.dir}: ${what}`);
   return { ok: true, id: s.id, dir: r.dir };
 }
 // DETERMINISTIC voice trigger: "run/launch <name>" maps straight to a defined routine (its project +
@@ -622,7 +631,7 @@ function matchRoutineForRun(phrase) {
   let best = null, bestShared = 0;
   for (const r of readRoutines()) {
     if (!r.project) continue;
-    const have = new Set(sig(r.text + " " + (r.prompt || "")));
+    const have = new Set(sig(r.text + " " + (r.command || "") + " " + (r.prompt || "")));
     const shared = want.filter((w) => have.has(w)).length;
     if (shared > bestShared) { bestShared = shared; best = r; }
   }
@@ -790,7 +799,7 @@ wss.on("connection", (ws) => {
     if (msg.type === "term-attach" && msg.id) { const s = termSessions.get(msg.id); if (s) send({ type: "term-data", id: s.id, data: s.buffer, replay: true }); return; }
     if (msg.type === "term-kill" && msg.id) { termKill(msg.id); return; }
     if (msg.type === "term-list") { send({ type: "term-list", sessions: termList() }); return; }
-    if (msg.type === "agent-launch" && msg.project && msg.task) { const r = launchAgentSession({ project: msg.project, task: msg.task, label: msg.label }); send(r.ok ? { type: "toast", title: "🤖 Agent launched", body: `${r.dir}: ${String(msg.task).slice(0, 70)}` } : { type: "toast", title: "Couldn't launch agent", body: r.error }); return; }
+    if (msg.type === "agent-launch" && msg.project && (msg.task || msg.command)) { const r = launchAgentSession({ project: msg.project, task: msg.task, command: msg.command, label: msg.label }); send(r.ok ? { type: "toast", title: "🤖 Agent launched", body: `${r.dir}: ${String(msg.command || msg.task).slice(0, 70)}` } : { type: "toast", title: "Couldn't launch agent", body: r.error }); return; }
     if (msg.type === "dispatch" && msg.id) { dispatchOrder(msg.id); return; } // fire-and-forget; HUD polls /orders
     if (msg.type === "go-live" && msg.id) { liveDispatch(msg.id).then((sid) => { if (sid) send({ type: "open-term", id: sid }); }); return; } // opens an in-HUD terminal tab
     if (msg.type === "finish-live" && msg.id) { finishLive(msg.id); return; }  // close the live session -> PR
@@ -977,7 +986,7 @@ wss.on("connection", (ws) => {
     if (ru) {
       const match = matchRoutineForRun(ru[1]);
       if (match) {
-        const a = launchAgentSession({ project: match.project, task: match.prompt || match.text, label: `${match.project} · routine` });
+        const a = launchAgentSession({ project: match.project, command: match.command, task: match.command ? "" : (match.prompt || match.text), label: `${match.project} · routine` });
         const name = match.text.split(/\s*[—–-]\s*/)[0].trim();
         if (a.ok) { broadcast({ type: "toast", title: "🤖 Agent launched", body: match.text.slice(0, 80) }); return capture(prompt, prompt, `Launching the ${name} in ${projDisplay(match.project)} now.`); }
         return capture(prompt, prompt, `I couldn't launch that — ${a.error}.`);
