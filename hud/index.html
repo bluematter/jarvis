@@ -785,7 +785,9 @@ function routineCard(r) {
     ? `<span class="sbtn rtrun on"><span class="spin"></span> running</span>`
     : r.cmd
       ? `<button class="sbtn rtrun" data-rtrun="${escape(r.id)}" title="Run: ${escape(r.cmd)}">▶ Run</button>`
-      : `<button class="sbtn" data-rtcmd="${escape(r.id)}" title="Attach a command so Jarvis can run this for you">⚙ Automate</button>`;
+      : r.project
+        ? `<button class="sbtn rtrun" data-rtrun="${escape(r.id)}" title="Run via a Claude agent in ${escape(repoLabel(r.project))}">▶ Run</button>`
+        : `<button class="sbtn" data-rtcmd="${escape(r.id)}" title="Attach a command, or set a project to run via an agent">⚙ Automate</button>`;
   return `<div class="rt ${r.due ? "due" : ""} ${done ? "rtdone" : ""}">
     <button class="rtcheck ${done ? "on" : ""}" data-rtdone="${escape(r.id)}" title="${done ? "Undo" : "Mark done today"}">${done ? "✓" : ""}</button>
     <div class="rtbody"><div class="rttext">${escape(r.text)}</div>

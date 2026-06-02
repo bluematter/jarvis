@@ -9,7 +9,8 @@ import { promisify } from "node:util";
 import { readFileSync, existsSync, readdirSync, appendFileSync, writeFileSync, mkdirSync, unlinkSync, symlinkSync } from "node:fs";
 import { join, extname } from "node:path";
 import { WebSocketServer } from "ws";
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
+import { z } from "zod";
 import { createRequire } from "node:module";
 const pty = createRequire(import.meta.url)("node-pty"); // CJS native module; real PTYs for the in-HUD terminal
 import { ROOT, ENV_KEYS } from "./env.mjs"; // loads .env into process.env (must be first); ENV_KEYS = its secret key names
@@ -285,7 +286,10 @@ const routinesWithDue = () => readRoutines().map((r) => ({ ...r, due: routineDue
 // runRoutine spawns the routine's `cmd` in its project dir and marks it done for the day on exit 0.
 function runRoutine(id) {
   const r = readRoutines().find((x) => x.id === id); if (!r) return;
-  if (!r.cmd) { broadcast({ type: "toast", title: "No command set", body: r.text.slice(0, 70) + " — add a run command to automate it" }); return; }
+  if (!r.cmd) { // no script -> delegate to a Claude agent in the project (it reads the README, runs Playwright, etc.)
+    if (r.project) { const a = launchAgentSession({ project: r.project, task: r.text, label: `${r.project} · routine` }); broadcast(a.ok ? { type: "toast", title: "🤖 Running via agent", body: r.text.slice(0, 70) } : { type: "toast", title: "Couldn't run", body: a.error }); return; }
+    broadcast({ type: "toast", title: "No command set", body: r.text.slice(0, 70) + " — add a project (to run via an agent) or a command" }); return;
+  }
   const cwd = r.project ? join(ROOT, "..", r.project) : join(ROOT, "..");
   updateRoutine(id, { running: true });
   broadcast({ type: "toast", title: "🔁 Running…", body: r.text.slice(0, 70) });
@@ -578,6 +582,46 @@ const termWrite = (id, data) => { const s = termSessions.get(id); if (s && !s.ex
 const termResize = (id, cols, rows) => { const s = termSessions.get(id); if (s && !s.exited && cols > 0 && rows > 0) { s.cols = cols; s.rows = rows; try { s.pty.resize(cols, rows); } catch {} } };
 const termKill = (id) => { const s = termSessions.get(id); if (!s) return; if (s.flush) { clearTimeout(s.flush); s.flush = null; } if (s.idle) clearTimeout(s.idle); try { s.pty.kill(); } catch {} termSessions.delete(id); console.log(`[term] killed ${id}`); broadcastTerms(); };
 
+// ---------- delegate a task to a Claude Code agent INSIDE a project (the "subagent through the tool") ----------
+// Jarvis (the hub) can't do project work itself — it spawns `claude "<task>"` in the project's own terminal,
+// where the project's README/scripts/Playwright live. Shows as a tab; the conductor flags you if it needs approval.
+const PROJECT_ALIASES = { basedhealth: "eatiq", "based health": "eatiq", eatiq: "eatiq", wireflow: "wireflow", gluely: "gluely-app", "gluely app": "gluely-app", "gluely-app": "gluely-app", rizzly: "rizz", rizz: "rizz", basedlabs: "basedlabs-hub", "based labs": "basedlabs-hub", "basedlabs-hub": "basedlabs-hub" };
+function resolveProjectDir(name) {
+  const key = String(name || "").trim().toLowerCase();
+  const dir = PROJECT_ALIASES[key] || (TERM_PROJECTS.includes(key) ? key : null);
+  if (!dir) return null;
+  const path = join(ROOT, "..", dir);
+  return existsSync(path) ? { dir, path } : null;
+}
+function launchAgentSession({ project, task, label }) {
+  const r = resolveProjectDir(project);
+  if (!r) return { ok: false, error: `unknown project "${project}" (try BasedHealth, Wireflow, Gluely, Rizzly, BasedLabs)` };
+  const t = String(task || "").trim();
+  if (t.length < 3) return { ok: false, error: "empty task" };
+  const dir = join(STATE, "agent", Date.now().toString(36)); mkdirSync(dir, { recursive: true });
+  const taskPath = join(dir, "task.txt"); writeFileSync(taskPath, t); // via $(cat) so the shell never re-parses the task
+  const s = termSpawn({ cwd: r.path, project: r.dir, label: label || `${r.dir} · agent`, cmd: `claude "$(cat '${taskPath}')"` });
+  if (!s) return { ok: false, error: "couldn't open the terminal" };
+  broadcast({ type: "open-term", id: s.id });
+  console.log(`[agent] launched in ${r.dir}: ${t.slice(0, 70)}`);
+  return { ok: true, id: s.id, dir: r.dir };
+}
+// the in-process tool the voice/conversation agent calls to actually DO something in a project
+const jarvisTools = createSdkMcpServer({
+  name: "jarvis", version: "1.0.0",
+  tools: [
+    tool(
+      "launch_agent_session",
+      "Launch a Claude Code agent INSIDE one of Michael's projects to actually DO a task there — it has that project's README, scripts and Playwright. Use this whenever he asks you to run/do/execute/kick off something that lives in a project (e.g. the BasedHealth TikTok outreach). You CANNOT do project work yourself from the hub; delegate it with this. Different from proposing a code work-order — this RUNS the task.",
+      { project: z.string().describe("project name: BasedHealth, Wireflow, Gluely, Rizzly, or BasedLabs"), task: z.string().describe("a clear, self-contained instruction for the agent, e.g. 'Run the TikTok micro-influencer outreach campaign following the project README'") },
+      async ({ project, task }) => {
+        const r = launchAgentSession({ project, task });
+        return { content: [{ type: "text", text: r.ok ? `Launched a Claude Code agent in ${r.dir} for that task. It's running in a Jarvis terminal tab; I'll flag you if it needs approval.` : `Couldn't launch: ${r.error}` }] };
+      },
+    ),
+  ],
+});
+
 // Fuzzy "Hey Jarvis" detector — base.en Whisper mangles "Jarvis" (adjargos, jervis, charvis, javis…).
 // Returns { hit, command }; command = the words after the wake token ("" for a bare "Hey Jarvis").
 function lev(a, b) {
@@ -724,6 +768,7 @@ wss.on("connection", (ws) => {
     if (msg.type === "term-attach" && msg.id) { const s = termSessions.get(msg.id); if (s) send({ type: "term-data", id: s.id, data: s.buffer, replay: true }); return; }
     if (msg.type === "term-kill" && msg.id) { termKill(msg.id); return; }
     if (msg.type === "term-list") { send({ type: "term-list", sessions: termList() }); return; }
+    if (msg.type === "agent-launch" && msg.project && msg.task) { const r = launchAgentSession({ project: msg.project, task: msg.task, label: msg.label }); send(r.ok ? { type: "toast", title: "🤖 Agent launched", body: `${r.dir}: ${String(msg.task).slice(0, 70)}` } : { type: "toast", title: "Couldn't launch agent", body: r.error }); return; }
     if (msg.type === "dispatch" && msg.id) { dispatchOrder(msg.id); return; } // fire-and-forget; HUD polls /orders
     if (msg.type === "go-live" && msg.id) { liveDispatch(msg.id).then((sid) => { if (sid) send({ type: "open-term", id: sid }); }); return; } // opens an in-HUD terminal tab
     if (msg.type === "finish-live" && msg.id) { finishLive(msg.id); return; }  // close the live session -> PR
@@ -793,6 +838,7 @@ wss.on("connection", (ws) => {
       options: {
         cwd: HUB, model: MODEL, permissionMode: PERMISSION_MODE, effort: "low", // effort low = lower cost, ~0 latency
         settingSources: ["user", "project"], includePartialMessages: true,
+        mcpServers: { jarvis: jarvisTools }, // lets Jarvis delegate a task to a Claude agent in a project
         ...(sessionId ? { resume: sessionId } : {}),
       },
     });
