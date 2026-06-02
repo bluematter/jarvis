@@ -59,6 +59,9 @@ const readState = () => {
 };
 
 const httpServer = createServer(async (req, res) => {
+  // localhost + same-origin only — defeats DNS-rebinding and a browsed-to site reading /state, /diff, etc.
+  const host = (req.headers.host || "").toLowerCase(), origin = req.headers.origin;
+  if (!LOCAL_HOSTS.has(host) || (origin && !WS_ORIGINS.has(origin))) { res.writeHead(403).end("forbidden"); return; }
   if (req.url.split("?")[0] === "/diff") {
     const id = new URL(req.url, "http://x").searchParams.get("id");
     const order = id && readOrder(id);
@@ -514,6 +517,7 @@ async function pollMerges() { // if you merged the PR yourself on GitHub, sync l
 // browser could otherwise connect to ws://localhost:4317 and drive the shell. Browsers always send Origin;
 // non-browser local clients (which already have shell access) send none.
 const WS_ORIGINS = new Set([`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`]);
+const LOCAL_HOSTS = new Set([`localhost:${PORT}`, `127.0.0.1:${PORT}`]); // Host-header allowlist for the HTTP endpoints (DNS-rebinding defense)
 const wss = new WebSocketServer({ server: httpServer, verifyClient: ({ origin }) => !origin || WS_ORIGINS.has(origin) });
 
 // proactive notifications: a HUD toast (all open tabs) + a native macOS notification

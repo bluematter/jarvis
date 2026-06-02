@@ -42,6 +42,20 @@ While running, the bridge auto-refreshes fleet + connectors every ~15 min (`JARV
 gives a spoken **morning briefing** the first time you interact each day (or press `B`). Set the voice
 model with `JARVIS_MODEL` (default left blank = your Claude Code default; Sonnet recommended for voice).
 
+## Security (read before running)
+
+Jarvis runs entirely on your machine and is meant for **localhost only** — the bridge binds `127.0.0.1`
+and rejects any cross-origin browser request, so a website you visit can't reach it. **Do not expose
+the port** (no `0.0.0.0`, tunnels, or reverse proxies) — the HUD includes a live shell and can drive
+Claude with tools.
+
+Two defaults to know:
+- The **conversation agent runs with `JARVIS_PERMISSION_MODE=bypassPermissions`** by default — it executes
+  tools without asking. That's the "just do it" Jarvis experience, but it means a voice/text turn has full
+  tool + shell access. Set `JARVIS_PERMISSION_MODE=default` in `.env` if you want approval prompts. (The
+  autonomous **dispatch** path is separately sandboxed with a denylist regardless.)
+- Secrets live only in `.env` (gitignored) — never commit it. `.env.example` shows the shape.
+
 ## How it works
 
 - **`hub/`** is the brain. `hub/CLAUDE.md` is the Jarvis persona; `hub/fleet.md` (generated) is the live status of every project; `hub/metrics/` caches business data. Claude Code runs *from this directory*, so it sees all of it.

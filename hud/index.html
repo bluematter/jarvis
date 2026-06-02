@@ -515,7 +515,7 @@ q.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && q.value.trim()) { e.preventDefault(); doSearch(q.value.trim()); }
   else if (e.key === "Escape") { e.preventDefault(); closeSearch(); q.blur(); }
 });
-const escape = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const escape = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 function setState(s, cap) { stateEl.textContent = s; stateEl.style.color = STATE_COLOR[s] || "#38e1ff"; if (cap != null) caption.textContent = cap; }
 function sendPrompt(text) { if (!wsReady || !text.trim()) return; addMe(text); ws.send(JSON.stringify({ type: "prompt", text })); }
 

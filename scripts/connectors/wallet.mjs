@@ -24,6 +24,7 @@ async function getJSON(u, tries = 3) {
 }
 
 if (!ADDR) { write({ source: "wallet", title: LABEL, status: "not-configured", tiles: [], note: "WALLET_ADDRESS missing in .env" }); process.exit(0); }
+if (!/^0x[a-fA-F0-9]{40}$/.test(ADDR)) { write({ source: "wallet", title: LABEL, status: "error", tiles: [], note: "WALLET_ADDRESS is not a valid 0x… address" }); process.exit(0); }
 
 try {
   let total = 0, stable = 0, ethTotal = 0, chainsWithValue = 0;
