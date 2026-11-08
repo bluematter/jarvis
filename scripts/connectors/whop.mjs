@@ -14,24 +14,27 @@ function write(card) { writeFileSync(OUT, JSON.stringify({ ...card, updatedAt: n
 if (!KEY) { write({ source: "whop", title: "Wireflow · Whop", status: "not-configured", tiles: [], note: "WHOP_API_KEY missing in .env" }); process.exit(0); }
 
 try {
-  const active = await api("/api/v2/memberships?valid=true&per=1");
-  const activeCount = active?.pagination?.total_count ?? null;
+  // Whop API v1 (v2 is refused from 2026-11-13). Cursor pagination, newest first.
+  const company = process.env.WHOP_COMPANY_ID || "biz_N01AiCpZ8lwjT1";
+  const active = await api(`/api/v1/memberships?company_id=${company}&statuses[]=active&first=1`);
+  const activeCount = active?.total_count ?? null;
 
-  // page payments back ~30d, sum amounts
-  const cutoff = Math.floor(Date.now() / 1000) - 30 * 86400;
-  let page = 1, rev = 0, count = 0, done = false;
-  while (!done && page <= 40) {
-    const res = await api(`/api/v2/payments?per=50&page=${page}`);
+  // page payments back ~30d, sum paid USD totals net of refunds
+  const cutoff = Date.now() - 30 * 86400 * 1000;
+  let after = "", pages = 0, rev = 0, count = 0, done = false;
+  while (!done && pages < 40) {
+    const res = await api(`/api/v1/payments?company_id=${company}&statuses[]=paid&first=100${after ? `&after=${after}` : ""}`);
     const rows = res?.data || [];
     if (!rows.length) break;
     for (const p of rows) {
-      if ((p.created_at ?? 0) < cutoff) { done = true; break; }
-      if (p.status === "refunded") continue;
-      rev += Number(p.final_amount || p.subtotal || 0);
+      if (Date.parse(p.created_at) < cutoff) { done = true; break; }
+      if (p.status !== "paid") continue;
+      rev += Number(p.usd_total ?? p.total ?? 0) - Number(p.refunded_amount || 0);
       count++;
     }
-    if (page >= (res?.pagination?.total_page || 1)) break;
-    page++;
+    if (!res?.page_info?.has_next_page) break;
+    after = res.page_info.end_cursor;
+    pages++;
   }
   const fmt = (n) => "$" + Math.round(n).toLocaleString("en-US");
   write({
